@@ -3,9 +3,11 @@ using BitFaster.Caching.Lru;
 
 namespace QueryCache;
 
+internal readonly record struct Entry<TResult>(TResult Value, TimeSpan Expiration, string[] Tags, long[] Versions);
+
 internal static class CacheHolder<TResult>
 {
-    public static readonly ICache<int, (TResult, TimeSpan)> Cache = new ConcurrentLruBuilder<int, (TResult, TimeSpan)>()
+    public static readonly ICache<QueryKey, Entry<TResult>> Cache = new ConcurrentLruBuilder<QueryKey, Entry<TResult>>()
         .WithCapacity(QueryCacheStore.Capacity)
         .WithExpireAfter(ExpirationCalculator<TResult>.Instance)
         .Build();

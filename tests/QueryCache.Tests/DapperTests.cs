@@ -21,40 +21,69 @@ public sealed class DapperTests
         return new DapperCacheQuery<int>(connection, command);
     }
 
-    [Fact]
-    public void Anonymous_parameters_hash_by_value()
+    private static QueryKey Key(object parameters)
     {
-        Assert.Equal(ParameterHasher.Hash(new { Id = 1, Ids = new[] { 1, 2 } }), ParameterHasher.Hash(new { Id = 1, Ids = new[] { 1, 2 } }));
-        Assert.NotEqual(ParameterHasher.Hash(new { Id = 1 }), ParameterHasher.Hash(new { Id = 2 }));
+        return new QueryKey(string.Empty, ParameterValues.Of(parameters));
     }
 
     [Fact]
-    public void DynamicParameters_hash_by_value()
+    public async Task Reads_inside_a_transaction_are_not_cached()
+    {
+        await using var connection = await NewConnection("create table t(id int);");
+        var transaction = await connection.BeginTransactionAsync();
+        await connection.ExecuteAsync("insert into t values (1)", transaction: transaction);
+
+        Assert.Equal([1], await Query(connection, new CommandDefinition("select id from t", transaction: transaction)).QueryAsync(Minute, CancellationToken.None));
+        await transaction.RollbackAsync();
+        await transaction.DisposeAsync();
+
+        Assert.Empty(await Query(connection, new CommandDefinition("select id from t")).QueryAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Cached_lists_are_read_only()
+    {
+        await using var connection = await NewConnection("create table t(id int); insert into t values (1);");
+
+        var rows = await Query(connection, new CommandDefinition("select id from t")).QueryAsync(Minute, CancellationToken.None);
+
+        Assert.Throws<NotSupportedException>(() => ((IList<int>)rows).Add(2));
+    }
+
+    [Fact]
+    public void Anonymous_parameters_are_keyed_by_value()
+    {
+        Assert.Equal(Key(new { Id = 1, Ids = new[] { 1, 2 } }), Key(new { Id = 1, Ids = new[] { 1, 2 } }));
+        Assert.NotEqual(Key(new { Id = 1 }), Key(new { Id = 2 }));
+    }
+
+    [Fact]
+    public void DynamicParameters_are_keyed_by_value()
     {
         var a = new DynamicParameters(new { Id = 1 });
         var b = new DynamicParameters(new { Id = 1 });
-        Assert.Equal(ParameterHasher.Hash(a), ParameterHasher.Hash(b));
+        Assert.Equal(Key(a), Key(b));
     }
 
     [Fact]
-    public void DynamicParameters_with_different_template_values_hash_differently()
+    public void DynamicParameters_with_different_template_values_are_keyed_differently()
     {
-        Assert.NotEqual(ParameterHasher.Hash(new DynamicParameters(new { Id = 1 })), ParameterHasher.Hash(new DynamicParameters(new { Id = 2 })));
+        Assert.NotEqual(Key(new DynamicParameters(new { Id = 1 })), Key(new DynamicParameters(new { Id = 2 })));
     }
 
     [Fact]
-    public void Dictionary_parameters_hash_by_value()
+    public void Dictionary_parameters_are_keyed_by_value()
     {
         static Dictionary<string, object?> Params(int id) => new(StringComparer.Ordinal) { ["Id"] = id };
-        Assert.Equal(ParameterHasher.Hash(Params(1)), ParameterHasher.Hash(Params(1)));
-        Assert.NotEqual(ParameterHasher.Hash(Params(1)), ParameterHasher.Hash(Params(2)));
+        Assert.Equal(Key(Params(1)), Key(Params(1)));
+        Assert.NotEqual(Key(Params(1)), Key(Params(2)));
     }
 
     [Fact]
-    public void DbString_parameters_hash_by_value()
+    public void DbString_parameters_are_keyed_by_value()
     {
-        Assert.Equal(ParameterHasher.Hash(new { Name = new DbString { Value = "a" } }), ParameterHasher.Hash(new { Name = new DbString { Value = "a" } }));
-        Assert.NotEqual(ParameterHasher.Hash(new { Name = new DbString { Value = "a" } }), ParameterHasher.Hash(new { Name = new DbString { Value = "b" } }));
+        Assert.Equal(Key(new { Name = new DbString { Value = "a" } }), Key(new { Name = new DbString { Value = "a" } }));
+        Assert.NotEqual(Key(new { Name = new DbString { Value = "a" } }), Key(new { Name = new DbString { Value = "b" } }));
     }
 
     [Fact]

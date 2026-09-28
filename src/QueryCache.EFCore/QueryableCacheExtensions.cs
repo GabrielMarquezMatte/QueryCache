@@ -1,6 +1,7 @@
 using System.Reflection;
+using System.Transactions;
 using Microsoft.EntityFrameworkCore;
-using QueryCache.EFCore.Comparers;
+using QueryCache.EFCore.Keys;
 
 namespace QueryCache.EFCore
 {
@@ -8,9 +9,11 @@ namespace QueryCache.EFCore
     /// Cached terminal operators for EF Core queries: <c>db.Users.Where(...).Include(...).ToListCachedAsync(expiration, ct)</c>.
     /// </summary>
     /// <remarks>
-    /// The cache key is the generated SQL, its parameter values and the connection string, so any LINQ/EF operator
+    /// The cache key is the generated SQL, its parameter values and the connection (without password), so any LINQ/EF operator
     /// (Include, AsSplitQuery, Select...) can precede these calls. Results are loaded with no tracking and shared
-    /// between callers; do not mutate them. Only relational providers are supported (the key comes from <c>CreateDbCommand</c>).
+    /// between callers; do not mutate the entities. Inside a transaction the cache is skipped.
+    /// Entries remember the tables they read, so <see cref="QueryCacheInvalidation.UseQueryCacheInvalidation(DbContextOptionsBuilder)"/>
+    /// can drop them on <c>SaveChanges</c>. Only relational providers are supported (the key comes from <c>CreateDbCommand</c>).
     /// </remarks>
     public static class QueryableCacheExtensions
     {
@@ -21,10 +24,10 @@ namespace QueryCache.EFCore
         /// <param name="query">The query to run.</param>
         /// <param name="expiration">How long the result lives in the cache.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>The rows.</returns>
-        public static ValueTask<List<T>> ToListCachedAsync<T>(this IQueryable<T> query, TimeSpan expiration, CancellationToken cancellationToken)
+        /// <returns>The rows, read-only because the same list is handed to every caller.</returns>
+        public static ValueTask<IReadOnlyList<T>> ToListCachedAsync<T>(this IQueryable<T> query, TimeSpan expiration, CancellationToken cancellationToken)
         {
-            return Cached(query, static (q, ct) => NoTracking(q).ToListAsync(ct), expiration, cancellationToken);
+            return Cached(query, static async (q, ct) => (IReadOnlyList<T>)(await NoTracking(q).ToListAsync(ct).ConfigureAwait(false)).AsReadOnly(), expiration, cancellationToken);
         }
 
         /// <summary>Builds a dictionary from the rows cached by <see cref="ToListCachedAsync{T}"/>.</summary>
@@ -121,8 +124,12 @@ namespace QueryCache.EFCore
         /// <returns><see langword="true"/> if anything was removed.</returns>
         public static bool InvalidateCache<T>(this IQueryable<T> query)
         {
-            var key = Key(query);
-            return QueryCacheStore.Remove<List<T>>(key)
+            QueryKey key;
+            using (var command = query.CreateDbCommand())
+            {
+                key = DbCommandKey.Of(command);
+            }
+            return QueryCacheStore.Remove<IReadOnlyList<T>>(key)
                 | QueryCacheStore.Remove<T>(key)
                 | QueryCacheStore.Remove<bool>(key)
                 | QueryCacheStore.Remove<int>(key);
@@ -131,13 +138,20 @@ namespace QueryCache.EFCore
         private static ValueTask<TReturn> Cached<T, TReturn>(IQueryable<T> query, Func<IQueryable<T>, CancellationToken, Task<TReturn>> run,
                                                              TimeSpan expiration, CancellationToken cancellationToken)
         {
-            return QueryCacheStore.GetOrAddAsync(Key(query), expiration, ct => run(query, ct), cancellationToken);
-        }
-
-        private static int Key<T>(IQueryable<T> query)
-        {
-            using var command = query.CreateDbCommand();
-            return DbCommandHasher.Hash(command);
+            QueryKey key;
+            string[] tags;
+            bool inTransaction;
+            using (var command = query.CreateDbCommand())
+            {
+                inTransaction = command.Transaction is not null || Transaction.Current is not null;
+                key = DbCommandKey.Of(command);
+                tags = TableTags.ForQuery(query.Expression, ConnectionScope.Of(command.Connection));
+            }
+            if (inTransaction)
+            {
+                return new(run(query, cancellationToken));
+            }
+            return QueryCacheStore.GetOrAddAsync(key, expiration, ct => run(query, ct), tags, cancellationToken);
         }
 
         private static IQueryable<T> NoTracking<T>(IQueryable<T> query)

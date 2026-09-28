@@ -30,6 +30,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="QueryCache.Tests" />
+    <InternalsVisibleTo Include="QueryCache.EFCore" />
+    <InternalsVisibleTo Include="QueryCache.Dapper" />
   </ItemGroup>
 
   <ItemGroup>

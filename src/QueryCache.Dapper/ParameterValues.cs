@@ -1,12 +1,11 @@
-using System.Collections;
 using System.Collections.Concurrent;
 using System.Reflection;
 using Dapper;
 
 namespace QueryCache.Dapper;
 
-/// <summary>Hashes Dapper parameter objects by value, not by reference.</summary>
-internal static class ParameterHasher
+/// <summary>Lists Dapper parameter names and values (not references) for the cache key.</summary>
+internal static class ParameterValues
 {
     private static readonly ConcurrentDictionary<Type, PropertyInfo[]> Properties = new();
 
@@ -14,9 +13,9 @@ internal static class ParameterHasher
     private static readonly FieldInfo Templates = typeof(DynamicParameters).GetField("templates", BindingFlags.NonPublic | BindingFlags.Instance)
         ?? throw new MissingFieldException(nameof(DynamicParameters), "templates");
 
-    public static int Hash(object? parameters)
+    public static List<object?> Of(object? parameters)
     {
-        var hash = new HashCode();
+        var values = new List<object?>();
         switch (parameters)
         {
             case null:
@@ -24,50 +23,37 @@ internal static class ParameterHasher
             case DynamicParameters dynamicParameters:
                 foreach (var name in dynamicParameters.ParameterNames.Order(StringComparer.Ordinal))
                 {
-                    hash.Add(name, StringComparer.Ordinal);
-                    AddValue(ref hash, dynamicParameters.Get<object?>(name));
+                    values.Add(name);
+                    values.Add(Value(dynamicParameters.Get<object?>(name)));
                 }
                 if (Templates.GetValue(dynamicParameters) is List<object> templates)
                 {
                     foreach (var template in templates)
                     {
-                        hash.Add(Hash(template));
+                        values.Add(Of(template));
                     }
                 }
                 break;
             case IEnumerable<KeyValuePair<string, object?>> pairs:
                 foreach (var pair in pairs.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
                 {
-                    hash.Add(pair.Key, StringComparer.Ordinal);
-                    AddValue(ref hash, pair.Value);
+                    values.Add(pair.Key);
+                    values.Add(Value(pair.Value));
                 }
                 break;
             default:
                 foreach (var property in Properties.GetOrAdd(parameters.GetType(), static type => type.GetProperties(BindingFlags.Public | BindingFlags.Instance)))
                 {
-                    hash.Add(property.Name, StringComparer.Ordinal);
-                    AddValue(ref hash, property.GetValue(parameters));
+                    values.Add(property.Name);
+                    values.Add(Value(property.GetValue(parameters)));
                 }
                 break;
         }
-        return hash.ToHashCode();
+        return values;
     }
 
-    private static void AddValue(ref HashCode hash, object? value)
+    private static object? Value(object? value)
     {
-        if (value is DbString dbString)
-        {
-            hash.Add(dbString.Value, StringComparer.Ordinal);
-            return;
-        }
-        if (value is IEnumerable items and not string)
-        {
-            foreach (var item in items)
-            {
-                hash.Add(item);
-            }
-            return;
-        }
-        hash.Add(value);
+        return value is DbString dbString ? dbString.Value : value;
     }
 }

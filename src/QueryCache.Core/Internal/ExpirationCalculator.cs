@@ -2,21 +2,21 @@ using BitFaster.Caching;
 
 namespace QueryCache;
 
-internal sealed class ExpirationCalculator<TResult> : IExpiryCalculator<int, (TResult, TimeSpan)>
+internal sealed class ExpirationCalculator<TResult> : IExpiryCalculator<QueryKey, Entry<TResult>>
 {
     public static readonly ExpirationCalculator<TResult> Instance = new();
 
-    public Duration GetExpireAfterCreate(int key, (TResult, TimeSpan) value)
+    public Duration GetExpireAfterCreate(QueryKey key, Entry<TResult> value)
     {
-        return Duration.FromTimeSpan(value.Item2);
+        return Duration.FromTimeSpan(value.Expiration);
     }
 
-    public Duration GetExpireAfterRead(int key, (TResult, TimeSpan) value, Duration current)
+    public Duration GetExpireAfterRead(QueryKey key, Entry<TResult> value, Duration current)
     {
         return current;
     }
 
-    public Duration GetExpireAfterUpdate(int key, (TResult, TimeSpan) value, Duration current)
+    public Duration GetExpireAfterUpdate(QueryKey key, Entry<TResult> value, Duration current)
     {
         return current;
     }

@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using QueryCache.EFCore;
-using QueryCache.EFCore.Comparers;
+using QueryCache.EFCore.Keys;
 
 namespace QueryCache.Tests;
 
@@ -37,9 +37,16 @@ public sealed class EfCoreTests
         }
     }
 
-    private sealed class Db(SqliteConnection connection, CommandCounter counter) : DbContext(new DbContextOptionsBuilder<Db>().UseSqlite(connection).AddInterceptors(counter).Options)
+    public sealed class Note
+    {
+        public int Id { get; set; }
+    }
+
+    private sealed class Db(SqliteConnection connection, CommandCounter counter)
+        : DbContext(new DbContextOptionsBuilder<Db>().UseSqlite(connection).AddInterceptors(counter).UseQueryCacheInvalidation().Options)
     {
         public DbSet<Item> Items => Set<Item>();
+        public DbSet<Note> Notes => Set<Note>();
         public CommandCounter Commands => counter;
 
         public override async ValueTask DisposeAsync()
@@ -49,16 +56,26 @@ public sealed class EfCoreTests
         }
     }
 
-    private static async Task<Db> NewDb(params Item[] items)
+    private static Task<Db> NewDb(params Item[] items)
     {
-        var connection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
-        await connection.OpenAsync();
-        var db = new Db(connection, new CommandCounter());
+        return NewDb($"{Guid.NewGuid():N};Mode=Memory;Cache=Shared", items);
+    }
+
+    private static async Task<Db> NewDb(string dataSource, params Item[] items)
+    {
+        var db = await OpenDb(dataSource);
         await db.Database.EnsureCreatedAsync();
         db.Items.AddRange(items);
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
         return db;
+    }
+
+    private static async Task<Db> OpenDb(string dataSource)
+    {
+        var connection = new SqliteConnection($"Data Source={dataSource}");
+        await connection.OpenAsync();
+        return new Db(connection, new CommandCounter());
     }
 
     [Fact]
@@ -195,7 +212,7 @@ public sealed class EfCoreTests
     }
 
     [Fact]
-    public void Array_parameters_hash_by_value()
+    public void Array_parameters_are_keyed_by_value()
     {
         static SqliteCommand Command(byte[] value)
         {
@@ -204,7 +221,86 @@ public sealed class EfCoreTests
             return command;
         }
 
-        Assert.Equal(DbCommandHasher.Hash(Command([1, 2])), DbCommandHasher.Hash(Command([1, 2])));
-        Assert.NotEqual(DbCommandHasher.Hash(Command([1, 2])), DbCommandHasher.Hash(Command([2, 1])));
+        Assert.Equal(DbCommandKey.Of(Command([1, 2])), DbCommandKey.Of(Command([1, 2])));
+        Assert.NotEqual(DbCommandKey.Of(Command([1, 2])), DbCommandKey.Of(Command([2, 1])));
+    }
+
+    [Fact]
+    public async Task Cached_lists_are_read_only()
+    {
+        await using var db = await NewDb(new Item { Id = 1 });
+
+        var items = await db.Items.ToListCachedAsync(Minute, CancellationToken.None);
+
+        Assert.Throws<NotSupportedException>(() => ((IList<Item>)items).Add(new Item { Id = 2 }));
+    }
+
+    [Fact]
+    public async Task Reads_inside_a_transaction_are_not_cached()
+    {
+        await using var db = await NewDb();
+        var transaction = await db.Database.BeginTransactionAsync();
+        db.Items.Add(new Item { Id = 1 });
+        await db.SaveChangesAsync();
+
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+        await transaction.RollbackAsync();
+        await transaction.DisposeAsync();
+        db.ChangeTracker.Clear();
+
+        Assert.Empty(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SaveChanges_invalidates_cached_queries_that_read_the_changed_table()
+    {
+        await using var db = await NewDb(new Item { Id = 1 });
+        var withTags = db.Items.Include(i => i.Tags);
+        Assert.Empty(Assert.Single(await withTags.ToListCachedAsync(Minute, CancellationToken.None)).Tags);
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+
+        db.Add(new Tag { Id = 1, ItemId = 1 });
+        db.Items.Add(new Item { Id = 2 });
+        await db.SaveChangesAsync();
+
+        Assert.Single(Assert.Single(await withTags.ToListCachedAsync(Minute, CancellationToken.None), i => i.Id == 1).Tags);
+        Assert.Equal(2, (await db.Items.ToListCachedAsync(Minute, CancellationToken.None)).Count);
+    }
+
+    [Fact]
+    public async Task SaveChanges_keeps_cached_queries_on_other_tables()
+    {
+        await using var db = await NewDb(new Item { Id = 1 });
+        await db.Items.ToListCachedAsync(Minute, CancellationToken.None);
+        await db.Items.ExecuteDeleteAsync();
+
+        db.Notes.Add(new Note { Id = 1 });
+        await db.SaveChangesAsync();
+
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Commit_invalidates_what_other_connections_cached_while_the_transaction_was_open()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var writer = await NewDb(file, new Item { Id = 1 });
+            await using var reader = await OpenDb(file);
+            await using var transaction = await writer.Database.BeginTransactionAsync();
+            writer.Items.Add(new Item { Id = 2 });
+            await writer.SaveChangesAsync();
+
+            Assert.Single(await reader.Items.ToListCachedAsync(Minute, CancellationToken.None));
+            await transaction.CommitAsync();
+
+            Assert.Equal(2, (await reader.Items.ToListCachedAsync(Minute, CancellationToken.None)).Count);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            File.Delete(file);
+        }
     }
 }

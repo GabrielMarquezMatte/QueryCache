@@ -1,10 +1,14 @@
 using System.Data.Common;
+using System.Transactions;
 using Dapper;
 
 namespace QueryCache.Dapper
 {
-    /// <summary>A Dapper command whose results are cached in-process, keyed by connection string, SQL text and parameter values.</summary>
-    /// <remarks>Hit/miss metrics are published by <see cref="QueryCacheStore"/> on the <see cref="QueryCacheStore.MeterName"/> meter.</remarks>
+    /// <summary>A Dapper command whose results are cached in-process, keyed by connection (without password), SQL text and parameter values.</summary>
+    /// <remarks>
+    /// Commands with a transaction, or run inside a <see cref="TransactionScope"/>, skip the cache.
+    /// Hit/miss metrics are published by <see cref="QueryCacheStore"/> on the <see cref="QueryCacheStore.MeterName"/> meter.
+    /// </remarks>
     /// <typeparam name="T">Row (or scalar) type.</typeparam>
     /// <param name="connection">Connection used to run the command on a cache miss.</param>
     /// <param name="command">The command to run.</param>
@@ -16,18 +20,26 @@ namespace QueryCache.Dapper
                        cancellationToken.CanBeCanceled ? cancellationToken : command.CancellationToken);
         }
 
+        private QueryKey Key => new($"{ConnectionScope.Of(connection)}\n{command.CommandText}", ParameterValues.Of(command.Parameters));
+
         private ValueTask<TReturn> ExecuteAsync<TReturn>(Func<DbConnection, CommandDefinition, Task<TReturn>> action, CommandFlags flags,
                                                          TimeSpan expiration, CancellationToken cancellationToken)
         {
-            return QueryCacheStore.GetOrAddAsync(GetHashCode(), expiration, ct => action(connection, WithToken(flags, ct)), cancellationToken);
+            if (command.Transaction is not null || Transaction.Current is not null)
+            {
+                return new(action(connection, WithToken(flags, cancellationToken)));
+            }
+            return QueryCacheStore.GetOrAddAsync(Key, expiration, ct => action(connection, WithToken(flags, ct)), cancellationToken);
         }
 
         /// <summary>
         /// Executes the query and returns results from cache, or fetches from the database and caches them.
+        /// The list is read-only because the same instance is handed to every caller.
         /// </summary>
-        public ValueTask<IEnumerable<T>> QueryAsync(TimeSpan expiration, CancellationToken cancellationToken)
+        public ValueTask<IReadOnlyList<T>> QueryAsync(TimeSpan expiration, CancellationToken cancellationToken)
         {
-            return ExecuteAsync(static (conn, cmd) => conn.QueryAsync<T>(cmd), command.Flags | CommandFlags.Buffered, expiration, cancellationToken);
+            return ExecuteAsync(static async (conn, cmd) => (IReadOnlyList<T>)(await conn.QueryAsync<T>(cmd).ConfigureAwait(false)).AsList().AsReadOnly(),
+                                command.Flags | CommandFlags.Buffered, expiration, cancellationToken);
         }
 
         /// <summary>
@@ -55,13 +67,13 @@ namespace QueryCache.Dapper
         /// <returns><see langword="true"/> if anything was removed.</returns>
         public bool InvalidateCache()
         {
-            var key = GetHashCode();
-            return QueryCacheStore.Remove<IEnumerable<T>>(key) | QueryCacheStore.Remove<T>(key);
+            var key = Key;
+            return QueryCacheStore.Remove<IReadOnlyList<T>>(key) | QueryCacheStore.Remove<T>(key);
         }
         /// <inheritdoc/>
         public bool Equals(DapperCacheQuery<T>? other)
         {
-            return other is not null && GetHashCode() == other.GetHashCode();
+            return other is not null && Key.Equals(other.Key);
         }
         /// <inheritdoc/>
         public override bool Equals(object? obj)
@@ -71,7 +83,7 @@ namespace QueryCache.Dapper
         /// <inheritdoc/>
         public override int GetHashCode()
         {
-            return HashCode.Combine(connection.ConnectionString, command.CommandText, ParameterHasher.Hash(command.Parameters));
+            return Key.GetHashCode();
         }
 
         /// <summary>Equality by cache key.</summary>
