@@ -71,14 +71,6 @@ namespace QueryCache.EFCore
             return QueryCacheStore.InvalidateTagsAsync(tags, CancellationToken.None);
         }
 
-        private static void Failed(DbContext? context)
-        {
-            if (context is not null && States.TryGetValue(context, out var state))
-            {
-                state.Saving = [];
-            }
-        }
-
         private static ValueTask Ended(DbContext? context, bool committed)
         {
             if (context is null || !States.TryGetValue(context, out var state))
@@ -124,17 +116,6 @@ namespace QueryCache.EFCore
             {
                 await Saved(eventData.Context).ConfigureAwait(false);
                 return result;
-            }
-
-            public override void SaveChangesFailed(DbContextErrorEventData eventData)
-            {
-                Failed(eventData.Context);
-            }
-
-            public override Task SaveChangesFailedAsync(DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
-            {
-                Failed(eventData.Context);
-                return Task.CompletedTask;
             }
         }
 
