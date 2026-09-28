@@ -8,7 +8,8 @@
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <!-- CA2007: no sync context in tests. CA1707: test names use underscores. CA1812/CA1034: nested/uninstantiated test types. -->
-    <NoWarn>$(NoWarn);CA2007;CA1707;CA1812;CA1034;CA2000;MA0004;MA0048;CA1002;CA1861;xUnit1051</NoWarn>
+    <!-- RS0016/RS0026/RS0037: public-API tracking is for the shipped packages under src/. -->
+    <NoWarn>$(NoWarn);RS0016;RS0026;RS0037;CA2007;CA1707;CA1812;CA1034;CA2000;MA0004;MA0048;CA1002;CA1861;xUnit1051</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,6 +18,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Caching.Hybrid" Version="10.10.0" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.11.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.4.1" />
     <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.1" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="Code Coverage">
+        <Configuration>
+          <CodeCoverage>
+            <!-- Only the shipped packages: the test and benchmark assemblies would inflate the number. -->
+            <ModulePaths>
+              <Include>
+                <ModulePath>.*[\/]QueryCache\.(Core|EFCore|Dapper)\.dll$</ModulePath>
+              </Include>
+            </ModulePaths>
+            <Sources>
+              <Exclude>
+                <!-- Generated code. The separator class matters: a bare `obj` substring would also
+                     match any path segment merely containing "obj". -->
+                <Source>.*[\/]obj[\/].*</Source>
+              </Exclude>
+            </Sources>
+            <Functions>
+              <Exclude>
+                <Function>*&lt;.*&gt;.*</Function>
+              </Exclude>
+            </Functions>
+          </CodeCoverage>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

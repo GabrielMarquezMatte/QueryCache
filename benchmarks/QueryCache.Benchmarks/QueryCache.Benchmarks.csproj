@@ -5,7 +5,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <!-- BenchmarkDotNet needs public, non-sealed, instance benchmark classes and runs without a sync context. -->
-    <NoWarn>$(NoWarn);CA1001;CA1515;CA1822;CA2007;CA2000;CA1707;CA1812;MA0004;MA0048;MA0038</NoWarn>
+    <!-- RS0016/RS0026/RS0037: public-API tracking is for the shipped packages under src/. -->
+    <NoWarn>$(NoWarn);RS0016;RS0026;RS0037;CA1001;CA1515;CA1822;CA2007;CA2000;CA1707;CA1812;MA0004;MA0048;MA0038</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

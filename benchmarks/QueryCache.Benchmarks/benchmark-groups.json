@@ -1,0 +1,14 @@
+[
+  {
+    "name": "cache",
+    "filter": "QueryCache.Benchmarks.CacheBenchmarks.*",
+    "pagesArgs": "--warmupCount 3 --iterationCount 10",
+    "prArgs": "--warmupCount 1 --iterationCount 5"
+  },
+  {
+    "name": "ef-miss-breakdown",
+    "filter": "QueryCache.Benchmarks.EfMissBreakdownBenchmarks.*",
+    "pagesArgs": "--warmupCount 3 --iterationCount 10",
+    "prArgs": "--warmupCount 1 --iterationCount 5"
+  }
+]

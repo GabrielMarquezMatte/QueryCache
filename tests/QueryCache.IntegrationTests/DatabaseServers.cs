@@ -5,9 +5,11 @@ using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Testcontainers.MsSql;
 using Testcontainers.PostgreSql;
+using Testcontainers.Redis;
 
 [assembly: AssemblyFixture(typeof(QueryCache.IntegrationTests.PostgresServer))]
 [assembly: AssemblyFixture(typeof(QueryCache.IntegrationTests.SqlServerServer))]
+[assembly: AssemblyFixture(typeof(QueryCache.IntegrationTests.RedisServer))]
 
 namespace QueryCache.IntegrationTests;
 
@@ -74,6 +76,23 @@ public sealed class PostgresServer : DatabaseServer
     protected override string ForDatabase(string connectionString, string database)
     {
         return new NpgsqlConnectionStringBuilder(connectionString) { Database = database }.ConnectionString;
+    }
+}
+
+public sealed class RedisServer : IAsyncLifetime
+{
+    private readonly RedisContainer _container = new RedisBuilder("redis:8-alpine").Build();
+
+    public string ConnectionString => _container.GetConnectionString();
+
+    public async ValueTask InitializeAsync()
+    {
+        await _container.StartAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _container.DisposeAsync();
     }
 }
 

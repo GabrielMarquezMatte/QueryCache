@@ -3,32 +3,219 @@ name: CI
 on:
   pull_request:
     branches: [ master, develop ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
   push:
     branches: [ master ]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  changes:
+    name: Detect changed paths
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
+    outputs:
+      dotnet: ${{ github.event_name != 'pull_request' || steps.filter.outputs.dotnet == 'true' }}
+      scripts: ${{ github.event_name != 'pull_request' || steps.filter.outputs.scripts == 'true' }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Filter
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            dotnet:
+              - 'src/**'
+              - 'tests/**'
+              - 'benchmarks/**'
+              - 'Directory.Build.props'
+              - 'global.json'
+              - 'QueryCache.slnx'
+              - '.editorconfig'
+              - 'coverage.runsettings'
+              - '.github/workflows/ci.yml'
+            scripts:
+              - '.github/scripts/**'
+              - 'benchmarks/QueryCache.Benchmarks/bench_delta.py'
+              - '.github/workflows/ci.yml'
+
+  test:
+    name: Build & Test (${{ matrix.os }})
+    needs: changes
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      RUN: ${{ needs.changes.outputs.dotnet }}
+
+    steps:
+      - name: Nothing to build
+        if: env.RUN != 'true'
+        run: echo "No .NET sources changed; skipping build and tests."
+
+      - name: Checkout
+        if: env.RUN == 'true'
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        if: env.RUN == 'true'
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
-      - run: dotnet restore QueryCache.slnx
-      - run: dotnet build QueryCache.slnx --configuration Release --no-restore
-      - run: dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj --configuration Release --no-build
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        if: env.RUN == 'true'
+        run: dotnet restore QueryCache.slnx
+
+      - name: Build (Release)
+        if: env.RUN == 'true'
+        run: dotnet build QueryCache.slnx --configuration Release --no-restore -p:DeterministicSourcePaths=false
+
+      - name: Verify formatting (whitespace)
+        if: env.RUN == 'true' && matrix.os == 'ubuntu-latest'
+        run: dotnet format whitespace QueryCache.slnx --verify-no-changes
+
+      - name: Test (Release)
+        if: env.RUN == 'true'
+        run: >-
+          dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj
+          --results-directory ./TestResults
+          --configuration Release
+          --verbosity normal
+          --no-build
+          --
+          --report-xunit-trx
+          ${{ matrix.os == 'ubuntu-latest' && '--coverage --coverage-settings coverage.runsettings --coverage-output-format cobertura' || '' }}
+
+      - name: Upload test results
+        if: always() && env.RUN == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: ./TestResults/**/*.trx
+          if-no-files-found: ignore
+
+      - name: Upload coverage to Codecov
+        if: env.RUN == 'true' && matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./TestResults/*.cobertura.xml
+          flags: unit
+          fail_ci_if_error: false
 
   integration:
-    name: integration (SQL Server, PostgreSQL)
+    name: Integration (SQL Server, PostgreSQL, Redis)
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Build (Release)
+        run: dotnet build tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release
+
+      - name: Test (Release)
+        run: >-
+          dotnet test --project tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj
+          --results-directory ./TestResults
+          --configuration Release
+          --verbosity normal
+          --no-build
+          --
+          --report-xunit-trx
+          --coverage --coverage-settings coverage.runsettings --coverage-output-format cobertura
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-integration
+          path: ./TestResults/**/*.trx
+          if-no-files-found: ignore
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./TestResults/*.cobertura.xml
+          flags: integration
+          fail_ci_if_error: false
+
+  pack:
+    name: Pack
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Pack and verify each package carries its docs and readme
+        shell: pwsh
+        run: |
+          foreach ($project in 'QueryCache.Core', 'QueryCache.EFCore', 'QueryCache.Dapper') {
+            dotnet pack "src/$project/$project.csproj" -c Release -o ./artifacts
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($pkg in Get-ChildItem ./artifacts/*.nupkg) {
+            $id = $pkg.Name -replace '\.\d+\.\d+\.\d+.*$', ''
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+            try {
+              $entries = $zip.Entries.FullName
+            } finally {
+              $zip.Dispose()
+            }
+            foreach ($expected in "lib/net10.0/$id.dll", "lib/net10.0/$id.xml", 'README.md') {
+              if ($entries -notcontains $expected) {
+                throw "$expected is missing from $($pkg.Name)."
+              }
+            }
+          }
+
+  scripts:
+    name: CI scripts
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: global.json
-      - run: dotnet restore tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj
-      - run: dotnet build tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release --no-restore
-      - run: dotnet test --project tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release --no-build
+
+      - name: Test public API scripts
+        working-directory: .github/scripts
+        run: |
+          python3 test_promote_public_api.py -v
+          python3 test_add_missing_public_api.py -v
+
+      - name: Smoke-test the benchmark comment renderer
+        run: |
+          mkdir -p empty-results
+          python3 benchmarks/QueryCache.Benchmarks/bench_delta.py --results empty-results

@@ -8,21 +8,147 @@ permissions:
   contents: read
 
 jobs:
-  pack:
+  build:
+    name: Build, test & pack
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
-      - run: dotnet restore QueryCache.slnx
-      - run: dotnet build QueryCache.slnx --configuration Release --no-restore -p:Version=${GITHUB_REF_NAME#v}
-      - run: dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj --configuration Release --no-build
-      - run: |
-          for p in QueryCache.Core QueryCache.EFCore QueryCache.Dapper; do
-            dotnet pack "src/$p/$p.csproj" --configuration Release --no-build -p:Version=${GITHUB_REF_NAME#v} --output ./artifacts
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Derive version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore QueryCache.slnx
+
+      - name: Build (Release)
+        run: dotnet build QueryCache.slnx --configuration Release --no-restore -p:Version=${{ steps.version.outputs.value }}
+
+      - name: Test (Release)
+        run: dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj --configuration Release --no-build
+
+      - name: Integration tests (Release)
+        run: dotnet test --project tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release --no-build
+
+      - name: Pack
+        run: |
+          for project in QueryCache.Core QueryCache.EFCore QueryCache.Dapper; do
+            dotnet pack "src/$project/$project.csproj" --configuration Release --no-build \
+              -p:Version=${{ steps.version.outputs.value }} --output ./artifacts
           done
-      - uses: actions/upload-artifact@v7
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
         with:
-          name: packages
           path: ./artifacts
+          format: spdx-json
+          output-file: ./artifacts/querycache.spdx.json
+          upload-release-assets: false
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-packages
+          path: ./artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish to NuGet & GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Download NuGet packages
+        uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: artifacts
+
+      - name: NuGet login (Trusted Publishing / OIDC)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Push to NuGet
+        run: >-
+          dotnet nuget push "./artifacts/*.nupkg"
+          --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+
+      - name: Upload to the GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+            artifacts/*.spdx.json
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  promote-public-api:
+    name: Promote PublicAPI.Unshipped -> Shipped
+    needs: publish
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v7
+        with:
+          ref: develop
+
+      - name: Promote unshipped API entries
+        id: promote
+        run: |
+          set +e
+          python3 .github/scripts/promote_public_api.py
+          code=$?
+          set -e
+          # Exit 2 means "nothing to promote", a real no-op, not a failure. Any other
+          # nonzero code is an actual crash (missing file, permission error, etc.) and must fail
+          # the job instead of being silently absorbed into changed=false.
+          if [ "$code" -eq 0 ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 2 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            exit "$code"
+          fi
+
+      - name: Open PR
+        if: steps.promote.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: "chore: promote public API for ${{ github.ref_name }}"
+          title: "chore: promote public API for ${{ github.ref_name }}"
+          body: >-
+            Everything that was in `PublicAPI.Unshipped.txt` when `${{ github.ref_name }}` was
+            published is now part of the shipped contract. Moves it into `PublicAPI.Shipped.txt`
+            so future removals/signature changes get flagged as breaking.
+          branch: chore/promote-public-api-${{ github.ref_name }}
+          base: develop
+          delete-branch: true
+          add-paths: |
+            src/*/PublicAPI/PublicAPI.Shipped.txt
+            src/*/PublicAPI/PublicAPI.Unshipped.txt

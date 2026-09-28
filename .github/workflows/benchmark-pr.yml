@@ -1,0 +1,181 @@
+name: Benchmarks -> PR Comment
+
+on:
+  pull_request:
+    branches: [master, develop]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+concurrency:
+  group: benchmark-pr-${{ github.event.pull_request.number }}${{ github.event.action == 'labeled' && github.event.label.name != 'run-benchmarks' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  changes:
+    name: Detect changed paths
+    if: >-
+      github.event.pull_request.draft != true &&
+      (github.event.action != 'labeled' || github.event.label.name == 'run-benchmarks')
+    runs-on: ubuntu-latest
+    outputs:
+      benchmarks: ${{ steps.filter.outputs.benchmarks }}
+      run: ${{ steps.filter.outputs.benchmarks == 'true' && (github.base_ref == 'master' || contains(github.event.pull_request.labels.*.name, 'run-benchmarks')) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Filter
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            benchmarks:
+              - 'src/**'
+              - 'benchmarks/QueryCache.Benchmarks/**'
+              - 'Directory.Build.props'
+              - 'global.json'
+              - '.github/workflows/benchmark-pr.yml'
+
+  groups:
+    name: Load benchmark groups
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: load
+        run: echo "matrix=$(jq -c . benchmarks/QueryCache.Benchmarks/benchmark-groups.json)" >> "$GITHUB_OUTPUT"
+
+  guard:
+    name: Every benchmark belongs to a group
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.benchmarks == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Build (Release)
+        run: dotnet build benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj --configuration Release
+
+      - name: Check group coverage
+        run: bash benchmarks/QueryCache.Benchmarks/check-benchmark-groups.sh
+
+  benchmark:
+    name: Run (${{ matrix.group.name }})
+    runs-on: ubuntu-latest
+    needs: [changes, groups]
+    if: needs.changes.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.groups.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        run: dotnet restore benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj
+
+      - name: Build (Release)
+        run: dotnet build benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj --configuration Release --no-restore
+
+      - name: Run benchmarks
+        run: |
+          IFS=' ' read -ra patterns <<< '${{ matrix.group.filter }}'
+          dotnet run --project benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj \
+            --configuration Release --no-build \
+            -- --filter "${patterns[@]}" ${{ matrix.group.prArgs }}
+
+      - name: Upload markdown results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-md-${{ matrix.group.name }}
+          path: BenchmarkDotNet.Artifacts/results/*-report-github.md
+          retention-days: 1
+
+      - name: Upload JSON results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-json-${{ matrix.group.name }}
+          path: BenchmarkDotNet.Artifacts/results/*-report-full.json
+          retention-days: 1
+
+  comment:
+    name: Post PR Comment
+    needs: [changes, benchmark]
+    if: always() && needs.changes.outputs.run == 'true' && needs.benchmark.result != 'cancelled'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Checkout the published benchmark series
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          path: gh-pages
+          fetch-depth: 1
+
+      - name: Download all markdown results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bench-md-*
+          merge-multiple: true
+          path: results/
+
+      - name: Download all JSON results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bench-json-*
+          merge-multiple: true
+          path: results-json/
+
+      - name: Build comment body
+        id: build
+        run: |
+          delta=(--results results-json)
+          if [ -f gh-pages/dev/bench/data.js ]; then
+            delta+=(--baseline gh-pages/dev/bench/data.js)
+          fi
+          {
+            echo 'body<<BENCHMARK_EOF'
+            python3 benchmarks/QueryCache.Benchmarks/bench_delta.py "${delta[@]}"
+            echo ''
+            echo '<details><summary>Full results per group</summary>'
+            echo ''
+            for f in results/*-report-github.md; do
+              [ -f "$f" ] || continue
+              name=$(basename "$f" -report-github.md)
+              echo "### $name"
+              echo ''
+              cat "$f"
+              echo ''
+            done
+            echo '</details>'
+            echo 'BENCHMARK_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post (or update) PR comment
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: benchmarks
+          message: ${{ steps.build.outputs.body }}

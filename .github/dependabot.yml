@@ -2,9 +2,39 @@ version: 2
 updates:
   - package-ecosystem: nuget
     directory: "/"
+    target-branch: develop
     schedule:
       interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      analyzers:
+        patterns:
+          - "*Analyzer*"
+      efcore:
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"
+          - "Npgsql*"
+      caching:
+        patterns:
+          - "Microsoft.Extensions.Caching.*"
+          - "ZiggyCreatures.*"
+      test:
+        patterns:
+          - "xunit*"
+          - "Microsoft.Testing.*"
+          - "Testcontainers*"
+      benchmarks:
+        patterns:
+          - "BenchmarkDotNet"
+    labels:
+      - dependencies
+
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: develop
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci

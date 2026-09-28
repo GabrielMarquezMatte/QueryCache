@@ -1,0 +1,105 @@
+name: Benchmarks -> GitHub Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'benchmarks/QueryCache.Benchmarks/**'
+      - 'Directory.Build.props'
+      - 'global.json'
+      - '.github/workflows/benchmark-pages.yml'
+
+concurrency:
+  group: benchmark-pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  groups:
+    name: Load benchmark groups
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: load
+        run: echo "matrix=$(jq -c . benchmarks/QueryCache.Benchmarks/benchmark-groups.json)" >> "$GITHUB_OUTPUT"
+
+  benchmark:
+    name: Run (${{ matrix.group.name }})
+    runs-on: ubuntu-latest
+    needs: groups
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.groups.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        run: dotnet restore benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj
+
+      - name: Build (Release)
+        run: dotnet build benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj --configuration Release --no-restore
+
+      - name: Run benchmarks
+        run: |
+          IFS=' ' read -ra patterns <<< '${{ matrix.group.filter }}'
+          dotnet run --project benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj \
+            --configuration Release --no-build \
+            -- --filter "${patterns[@]}" ${{ matrix.group.pagesArgs }}
+
+      - name: Upload JSON results
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-json-${{ matrix.group.name }}
+          path: BenchmarkDotNet.Artifacts/results/*-report-full.json
+          retention-days: 1
+
+  publish:
+    name: Publish to Pages
+    needs: benchmark
+    if: always() && needs.benchmark.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download all JSON results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bench-json-*
+          merge-multiple: true
+          path: results/
+
+      - name: Combine JSON files
+        run: |
+          jq -s '{
+            "Title": "QueryCache Benchmarks",
+            "Benchmarks": [.[].Benchmarks[]]
+          }' results/*.json > combined-report.json
+
+      - name: Publish to GitHub Pages
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: benchmarkdotnet
+          output-file-path: combined-report.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false

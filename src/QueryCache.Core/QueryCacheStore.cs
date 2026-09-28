@@ -16,8 +16,9 @@ namespace QueryCache;
 /// Results meaning "no rows" are returned but not kept: <see langword="default"/> values (<see langword="null"/>, 0, <see langword="false"/>) and empty collections.
 /// </summary>
 /// <remarks>
-/// Publishes metrics on the <see cref="MeterName"/> meter: <c>querycache.hits</c>, <c>querycache.misses</c> and
-/// <c>querycache.fill.duration</c> (seconds), each tagged with <c>querycache.type</c> (the result type).
+/// Publishes metrics on the <see cref="MeterName"/> meter: <c>querycache.hits</c>, <c>querycache.misses</c>,
+/// <c>querycache.fill.duration</c> (seconds) and <c>querycache.store.failures</c> (results the <see cref="HybridCache"/> could not store,
+/// returned uncached), each tagged with <c>querycache.type</c> (the result type).
 /// </remarks>
 public static class QueryCacheStore
 {
@@ -27,6 +28,7 @@ public static class QueryCacheStore
     private static readonly Meter Meter = new(MeterName);
     private static readonly Counter<long> Hits = Meter.CreateCounter<long>("querycache.hits", description: "Lookups served from the cache.");
     private static readonly Counter<long> Misses = Meter.CreateCounter<long>("querycache.misses", description: "Lookups that ran the query.");
+    private static readonly Counter<long> StoreFailures = Meter.CreateCounter<long>("querycache.store.failures", description: "Results the HybridCache failed to store (such as serialization errors); they were returned uncached.");
     private static readonly Histogram<double> FillDuration = Meter.CreateHistogram<double>("querycache.fill.duration", "s", "Time spent running the query on a miss.");
 
     private static readonly TimeSpan MaxExpiration = TimeSpan.FromDays(36500);
@@ -55,6 +57,8 @@ public static class QueryCacheStore
     /// Where entries live. <see langword="null"/> (default): the in-process LRU, where a hit hands back the cached instance.
     /// Set it at startup, for example to <c>app.Services.GetRequiredService&lt;HybridCache&gt;()</c>, to share entries and invalidations
     /// between instances through the cache's distributed layer. Results must then be serializable by its serializer, and a hit costs a deserialization.
+    /// Tag invalidation (<c>SaveChanges</c>) reaches other instances only if the cache propagates <c>RemoveByTagAsync</c>:
+    /// FusionCache with a backplane does, Microsoft's default implementation does not.
     /// </summary>
     public static HybridCache? HybridCache { get; set; }
 
@@ -233,7 +237,15 @@ public static class QueryCacheStore
             return;
         }
         var hybridKey = HybridKey<T>(key);
-        await hybrid.SetAsync(hybridKey, entry.Value, new HybridCacheEntryOptions { Expiration = entry.Expiration }, HybridTags(entry.Tags), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await hybrid.SetAsync(hybridKey, entry.Value, new HybridCacheEntryOptions { Expiration = entry.Expiration }, HybridTags(entry.Tags), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            StoreFailures.Add(1, CacheHolder<T>.TypeTag);
+            return;
+        }
         if (flight.Invalidated || !IsCurrent(entry.Tags, entry.Versions))
         {
             await hybrid.RemoveAsync(hybridKey, CancellationToken.None).ConfigureAwait(false);

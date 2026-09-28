@@ -1,6 +1,11 @@
 # QueryCache
 
 [![CI](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/codeql.yml)
+[![Release](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/release.yml/badge.svg)](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/release.yml)
+[![NuGet](https://img.shields.io/nuget/v/QueryCache.EFCore.svg)](https://www.nuget.org/packages/QueryCache.EFCore)
+[![codecov](https://codecov.io/gh/GabrielMarquezMatte/QueryCache/branch/master/graph/badge.svg)](https://codecov.io/gh/GabrielMarquezMatte/QueryCache)
+[![Benchmarks](https://img.shields.io/badge/benchmarks-GitHub%20Pages-informational)](https://gabrielmarquezmatte.github.io/QueryCache/dev/bench/)
 [![License](https://img.shields.io/github/license/GabrielMarquezMatte/QueryCache.svg)](LICENSE)
 
 Query-result cache for EF Core and Dapper on .NET 10, in process or in any `HybridCache` (Redis, FusionCache...).
@@ -40,21 +45,54 @@ var row = await conn.ToCacheQuery<int>(new CommandDefinition("select id from t w
 
 ### Distributed cache
 
-By default entries live in process. To share them (and their invalidation) between instances, hand QueryCache a `HybridCache` at startup:
+By default entries live in process. To share them (and their invalidation) between instances, hand QueryCache a `HybridCache` at startup. For several instances use [FusionCache](https://github.com/ZiggyCreatures/FusionCache) with a Redis backplane:
 
 ```csharp
-builder.Services.AddStackExchangeRedisCache(o => o.Configuration = redis);
-builder.Services.AddHybridCache();                    // or FusionCache: AddFusionCache().WithBackplane(...).AsHybridCache()
+builder.Services.AddFusionCache()
+    .WithSerializer(new FusionCacheSystemTextJsonSerializer(new JsonSerializerOptions { PreferredObjectCreationHandling = JsonObjectCreationHandling.Populate }))
+    .WithDistributedCache(new RedisCache(new RedisCacheOptions { Configuration = redis }))
+    .WithBackplane(new RedisBackplane(new RedisBackplaneOptions { Configuration = redis }))
+    .AsHybridCache();
 var app = builder.Build();
 QueryCacheStore.HybridCache = app.Services.GetRequiredService<HybridCache>();
 ```
 
-Keys and tags are SHA-256 digests (no SQL or connection string in Redis). `SaveChanges`, `InvalidateCacheAsync` and expiration work the same. The trade-offs:
+Keys and tags are SHA-256 digests (no SQL or connection string in Redis). Tested against Redis with two caches per test standing in for two instances:
 
-- Results must be serializable by the cache's serializer (System.Text.Json by default). EF entities with reference cycles (`Include` both ways) need a projection or a custom serializer.
+| | FusionCache + backplane | Microsoft `AddHybridCache()` |
+|---|---|---|
+| Another instance reads the entry from Redis | yes | yes |
+| `InvalidateCacheAsync` reaches other instances | yes | yes |
+| `SaveChanges` (tag) invalidation reaches other instances | yes, even their local copy | **no**: other instances keep serving the old entry until it expires |
+
+So with Microsoft's `HybridCache`, only rely on `SaveChanges` invalidation within one instance, or keep expirations short. Other trade-offs:
+
 - A hit deserializes, so it costs more than the in-process hit and grows with the row count; callers get their own copies.
-- Microsoft's `HybridCache` has no backplane: other instances keep their local copy until its `LocalCacheExpiration`. Keep that short, or use FusionCache with a backplane.
 - Single-flight is per process.
+
+#### Navigation properties
+
+In process nothing is serialized, so any entity graph is cached as is. In a distributed cache the result goes through the cache's serializer (System.Text.Json by default), and navigations are where that breaks. Projections (`Select` into a DTO or record) avoid all of it. For entities:
+
+| Shape | What to configure |
+|---|---|
+| No cycle, collection with a setter | Nothing. |
+| No cycle, get-only collection (`public List<Tag> Tags { get; } = []`) | `PreferredObjectCreationHandling = Populate`, or the collection comes back empty. |
+| Cycle: `Include` makes EF set the back-reference (`Order.Lines` ↔ `OrderLine.Order`) | `ReferenceHandler.Preserve` and collections **with setters**: the graph comes back whole, back-references included. `Populate` cannot be combined with any `ReferenceHandler`, and `Preserve` leaves get-only collections empty. |
+
+A result the serializer rejects (a cycle without `Preserve`) is still returned, just not stored. Microsoft's `HybridCache` drops it silently; with FusionCache QueryCache records it on `querycache.store.failures`. Either way that query runs against the database every time, so watch that counter or `querycache.misses` without hits.
+
+Serializer options with each cache:
+
+```csharp
+var json = new JsonSerializerOptions { ReferenceHandler = ReferenceHandler.Preserve };
+
+// FusionCache
+builder.Services.AddFusionCache().WithSerializer(new FusionCacheSystemTextJsonSerializer(json)) /* ... */;
+
+// Microsoft HybridCache: a serializer factory, such as JsonSerializerFactory in tests/QueryCache.IntegrationTests/RedisTests.cs
+builder.Services.AddHybridCache().AddSerializerFactory(new JsonSerializerFactory(json));
+```
 
 ## Benchmarks
 
@@ -81,7 +119,7 @@ A hit costs the same whatever the row count. A miss adds ~32 μs for EF Core and
 - **Single-flight**: concurrent misses run the query once and share its result or its exception.
 - `QueryCacheStore.Capacity` sets the in-process entries kept per result type (default 128); set it at startup. `Timeout.InfiniteTimeSpan` keeps an entry until removed or evicted; zero or negative expirations throw.
 - To skip the cache, call EF/Dapper directly.
-- Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`, `querycache.fill.duration` (s), tagged with `querycache.type`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
+- Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`, `querycache.fill.duration` (s), `querycache.store.failures`, tagged with `querycache.type`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
 
 ## Build
 
@@ -89,9 +127,11 @@ A hit costs the same whatever the row count. A miss adds ~32 μs for EF Core and
 dotnet restore QueryCache.slnx
 dotnet build QueryCache.slnx --configuration Release
 dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj --configuration Release
-dotnet test --project tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release   # needs Docker: SQL Server + PostgreSQL via Testcontainers
+dotnet test --project tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release   # needs Docker: SQL Server, PostgreSQL and Redis via Testcontainers
 dotnet run --project benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj --configuration Release -- --filter *
 ```
+
+Public API changes need an entry in `src/*/PublicAPI/PublicAPI.Unshipped.txt` (the build fails with RS0016 otherwise); `python3 .github/scripts/add_missing_public_api.py` adds them. A release moves them to `PublicAPI.Shipped.txt`. New benchmark classes need a group in `benchmarks/QueryCache.Benchmarks/benchmark-groups.json`.
 
 ## License
 
