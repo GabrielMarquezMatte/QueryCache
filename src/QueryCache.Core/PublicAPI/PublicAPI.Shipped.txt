@@ -1,1 +1,18 @@
 #nullable enable
+QueryCache.QueryCacheStore
+QueryCache.QueryKey
+QueryCache.QueryKey.Equals(QueryCache.QueryKey? other) -> bool
+QueryCache.QueryKey.QueryKey(string! text, params System.Collections.Generic.IEnumerable<object?>! values) -> void
+const QueryCache.QueryCacheStore.MeterName = "QueryCache" -> string!
+override QueryCache.QueryKey.Equals(object? obj) -> bool
+override QueryCache.QueryKey.GetHashCode() -> int
+override QueryCache.QueryKey.ToString() -> string!
+static QueryCache.QueryCacheStore.Capacity.get -> int
+static QueryCache.QueryCacheStore.Capacity.set -> void
+static QueryCache.QueryCacheStore.GetOrAddAsync<T>(QueryCache.QueryKey! key, System.TimeSpan expiration, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, System.Collections.Generic.IReadOnlyCollection<string!>! tags, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<T>
+static QueryCache.QueryCacheStore.GetOrAddAsync<T>(QueryCache.QueryKey! key, System.TimeSpan expiration, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, System.Func<System.Collections.Generic.IReadOnlyCollection<string!>!>! tags, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<T>
+static QueryCache.QueryCacheStore.GetOrAddAsync<T>(QueryCache.QueryKey! key, System.TimeSpan expiration, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<T>!>! factory, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<T>
+static QueryCache.QueryCacheStore.HybridCache.get -> Microsoft.Extensions.Caching.Hybrid.HybridCache?
+static QueryCache.QueryCacheStore.HybridCache.set -> void
+static QueryCache.QueryCacheStore.InvalidateTagsAsync(System.Collections.Generic.IEnumerable<string!>! tags, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+static QueryCache.QueryCacheStore.RemoveAsync<T>(QueryCache.QueryKey! key, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
