@@ -26,6 +26,22 @@ public static class QueryCacheStore
 
     private static readonly TimeSpan MaxExpiration = TimeSpan.FromDays(36500);
 
+    private static int _capacity = 128;
+
+    /// <summary>
+    /// Maximum entries kept per result type (least recently used are evicted). Default 128, minimum 3.
+    /// A result type's cache is sized when first used, so set this at startup.
+    /// </summary>
+    public static int Capacity
+    {
+        get => Volatile.Read(ref _capacity);
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 3);
+            Volatile.Write(ref _capacity, value);
+        }
+    }
+
     // ponytail: locks are dropped once the winner finishes; a late caller may re-run the factory. Fine for cache fills.
     private static readonly ConcurrentDictionary<int, Gate> Locks = new();
 

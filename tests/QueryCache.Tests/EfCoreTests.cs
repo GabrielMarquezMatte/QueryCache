@@ -78,6 +78,18 @@ public sealed class EfCoreTests
     }
 
     [Fact]
+    public async Task ToCacheQueryBuilder_extension_builds_a_cached_query()
+    {
+        await using var db = await NewDb(new Item { Id = 1 }, new Item { Id = 2 });
+        var builder = db.Items.ToCacheQueryBuilder().Where(i => i.Id == 2);
+
+        await builder.ToListAsync(Minute, CancellationToken.None);
+        await db.Items.ExecuteDeleteAsync();
+
+        Assert.Equal(2, Assert.Single(await builder.ToListAsync(Minute, CancellationToken.None)).Id);
+    }
+
+    [Fact]
     public async Task Same_query_on_different_databases_is_cached_separately()
     {
         await using var db1 = await NewDb(new Item { Id = 1, Name = "db1" });

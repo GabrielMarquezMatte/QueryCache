@@ -9,12 +9,14 @@ In-process async query-result cache (LRU, per-entry expiry, single-flight) for E
 | `QueryCache.Dapper` | `DapperCacheQuery<T>`: `QueryAsync/QueryFirstOrDefaultAsync/ExecuteScalarAsync(expiration, ct)`. |
 
 ```csharp
-var users = await new CacheQueryBuilder<User>(db.Users)
+var users = await db.Users.ToCacheQueryBuilder()
     .Where(u => u.Active)
     .ToListAsync(TimeSpan.FromMinutes(5), ct);
 
-var row = await new DapperCacheQuery<int>(conn, new CommandDefinition("select id from t where x = @X", new { X = 1 }))
+var row = await conn.ToCacheQuery<int>(new CommandDefinition("select id from t where x = @X", new { X = 1 }))
     .QueryFirstOrDefaultAsync(TimeSpan.FromMinutes(5), ct);
+
+QueryCacheStore.Capacity = 1_000; // entries per result type (default 128); set at startup
 ```
 
 Cache key = SQL + parameter **values** + connection string, so the same query against another database does not collide.

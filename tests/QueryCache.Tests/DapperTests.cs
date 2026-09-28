@@ -72,6 +72,19 @@ public sealed class DapperTests
     }
 
     [Fact]
+    public async Task ToCacheQuery_extension_builds_a_cached_query()
+    {
+        await using var connection = await NewConnection("create table t(id int); insert into t values (3);");
+        var query = connection.ToCacheQuery<int>(new CommandDefinition("select id from t"));
+
+        await query.QueryAsync(Minute, CancellationToken.None);
+        await connection.ExecuteAsync("delete from t");
+
+        Assert.Equal([3], await query.QueryAsync(Minute, CancellationToken.None));
+        Assert.True(query == Query(connection, new CommandDefinition("select id from t")));
+    }
+
+    [Fact]
     public async Task DynamicParameters_with_different_values_return_their_own_rows()
     {
         await using var connection = await NewConnection("create table t(id int); insert into t values (1), (2);");

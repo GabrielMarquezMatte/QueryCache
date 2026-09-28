@@ -6,6 +6,29 @@ public sealed class QueryCacheStoreTests
 {
     public sealed record TelemetryProbe(int Value);
 
+    public sealed record CapacityProbe(int Value);
+
+    [Fact]
+    public async Task Capacity_applies_to_result_types_first_used_after_it_is_set()
+    {
+        QueryCacheStore.Capacity = 1000;
+        for (var i = 0; i < 1000; i++)
+        {
+            var value = i;
+            await QueryCacheStore.GetOrAddAsync(HashCode.Combine(nameof(CapacityProbe), i), TimeSpan.FromMinutes(1), _ => Task.FromResult(new CapacityProbe(value)), CancellationToken.None);
+        }
+
+        Assert.Equal(1000, Enumerable.Range(0, 1000).Count(i => QueryCacheStore.TryGet<CapacityProbe>(HashCode.Combine(nameof(CapacityProbe), i), out _)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void Capacity_below_three_is_rejected(int capacity)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => QueryCacheStore.Capacity = capacity);
+    }
+
     [Fact]
     public async Task Concurrent_misses_run_factory_once()
     {
