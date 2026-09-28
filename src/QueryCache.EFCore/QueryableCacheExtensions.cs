@@ -139,19 +139,19 @@ namespace QueryCache.EFCore
                                                              TimeSpan expiration, CancellationToken cancellationToken)
         {
             QueryKey key;
-            string[] tags;
+            string scope;
             bool inTransaction;
             using (var command = query.CreateDbCommand())
             {
                 inTransaction = command.Transaction is not null || Transaction.Current is not null;
                 key = DbCommandKey.Of(command);
-                tags = TableTags.ForQuery(query.Expression, ConnectionScope.Of(command.Connection));
+                scope = ConnectionScope.Of(command.Connection);
             }
             if (inTransaction)
             {
                 return new(run(query, cancellationToken));
             }
-            return QueryCacheStore.GetOrAddAsync(key, expiration, ct => run(query, ct), tags, cancellationToken);
+            return QueryCacheStore.GetOrAddAsync(key, expiration, ct => run(query, ct), () => TableTags.ForQuery(query.Expression, scope), cancellationToken);
         }
 
         private static IQueryable<T> NoTracking<T>(IQueryable<T> query)

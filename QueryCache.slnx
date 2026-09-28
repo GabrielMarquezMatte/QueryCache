@@ -4,6 +4,9 @@
     <Project Path="src/QueryCache.EFCore/QueryCache.EFCore.csproj" />
     <Project Path="src/QueryCache.Dapper/QueryCache.Dapper.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/QueryCache.Tests/QueryCache.Tests.csproj" />
   </Folder>

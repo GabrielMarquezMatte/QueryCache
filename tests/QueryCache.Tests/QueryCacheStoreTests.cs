@@ -245,6 +245,25 @@ public sealed class QueryCacheStoreTests
     }
 
     [Fact]
+    public async Task Tags_are_computed_only_on_a_miss()
+    {
+        var key = Key(nameof(Tags_are_computed_only_on_a_miss));
+        var computed = 0;
+        IReadOnlyCollection<string> Tags()
+        {
+            computed++;
+            return ["tests.lazy"];
+        }
+
+        await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("v"), Tags, CancellationToken.None);
+        await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("v"), Tags, CancellationToken.None);
+        QueryCacheStore.InvalidateTags(["tests.lazy"]);
+
+        Assert.Equal(1, computed);
+        Assert.False(QueryCacheStore.TryGet<string>(key, out _));
+    }
+
+    [Fact]
     public async Task Tag_invalidated_during_fill_keeps_the_stale_value_out_of_the_cache()
     {
         var key = Key(nameof(Tag_invalidated_during_fill_keeps_the_stale_value_out_of_the_cache));

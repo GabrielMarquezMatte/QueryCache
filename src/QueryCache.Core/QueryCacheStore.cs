@@ -102,7 +102,7 @@ public static class QueryCacheStore
     /// <param name="cancellationToken">Cancels this caller's wait; passed to <paramref name="factory"/> when this caller runs it.</param>
     public static ValueTask<T> GetOrAddAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, CancellationToken cancellationToken)
     {
-        return GetOrAddAsync(key, expiration, factory, [], cancellationToken);
+        return GetOrAddAsync(key, expiration, factory, static () => [], cancellationToken);
     }
 
     /// <summary>Returns the cached value, or runs <paramref name="factory"/> once per key and caches the result for <paramref name="expiration"/>.</summary>
@@ -111,7 +111,18 @@ public static class QueryCacheStore
     /// <param name="factory">Produces the value on a miss.</param>
     /// <param name="tags">Tags the entry depends on; <see cref="InvalidateTags"/> on any of them drops it.</param>
     /// <param name="cancellationToken">Cancels this caller's wait; passed to <paramref name="factory"/> when this caller runs it.</param>
-    public static async ValueTask<T> GetOrAddAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, IReadOnlyCollection<string> tags, CancellationToken cancellationToken)
+    public static ValueTask<T> GetOrAddAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, IReadOnlyCollection<string> tags, CancellationToken cancellationToken)
+    {
+        return GetOrAddAsync(key, expiration, factory, () => tags, cancellationToken);
+    }
+
+    /// <summary>Returns the cached value, or runs <paramref name="factory"/> once per key and caches the result for <paramref name="expiration"/>.</summary>
+    /// <param name="key">Cache key.</param>
+    /// <param name="expiration">How long the result lives. <see cref="Timeout.InfiniteTimeSpan"/> keeps it until removed or evicted.</param>
+    /// <param name="factory">Produces the value on a miss.</param>
+    /// <param name="tags">Computes the tags the entry depends on; called only on a miss, before <paramref name="factory"/>.</param>
+    /// <param name="cancellationToken">Cancels this caller's wait; passed to <paramref name="factory"/> when this caller runs it.</param>
+    public static async ValueTask<T> GetOrAddAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, Func<IReadOnlyCollection<string>> tags, CancellationToken cancellationToken)
     {
         if (expiration == Timeout.InfiniteTimeSpan || expiration > MaxExpiration)
         {
@@ -130,7 +141,7 @@ public static class QueryCacheStore
             var flight = (Flight<T>)Flights.GetOrAdd((key, typeof(T)), mine);
             if (ReferenceEquals(flight, mine))
             {
-                return await FillAsync(key, expiration, factory, [.. tags], mine, cancellationToken).ConfigureAwait(false);
+                return await FillAsync(key, expiration, factory, tags, mine, cancellationToken).ConfigureAwait(false);
             }
             try
             {
@@ -144,14 +155,15 @@ public static class QueryCacheStore
         }
     }
 
-    private static async Task<T> FillAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, string[] tags,
+    private static async Task<T> FillAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, Func<IReadOnlyCollection<string>> tagSource,
                                               Flight<T> flight, CancellationToken cancellationToken)
     {
         Misses.Add(1, CacheHolder<T>.TypeTag);
-        var versions = Array.ConvertAll(tags, static tag => TagVersions.GetValueOrDefault(tag));
         var start = Stopwatch.GetTimestamp();
         try
         {
+            string[] tags = [.. tagSource()];
+            var versions = Array.ConvertAll(tags, static tag => TagVersions.GetValueOrDefault(tag));
             var value = await factory(cancellationToken).ConfigureAwait(false);
             FillDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, CacheHolder<T>.TypeTag);
             if (!IsEmpty(value))
