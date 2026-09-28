@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>QueryCache.IntegrationTests</RootNamespace>
+    <TargetFramework>net10.0</TargetFramework>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <!-- CA2007: no sync context in tests. CA1707: test names use underscores. CA1812/CA1034: nested/uninstantiated test types. -->
+    <NoWarn>$(NoWarn);CA2007;CA1707;CA1812;CA1034;CA2000;MA0004;MA0048;CA1002;CA1861;CA2100;CA1515;xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.1" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.12.0" />
+    <PackageReference Include="Testcontainers.MsSql" Version="4.12.0" />
+    <!-- Testcontainers 4.12 pulls SSH.NET 2025.1.0 (GHSA-mggc-4xg6-vcxf, GHSA-q939-rpr3-3284). -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\QueryCache.EFCore\QueryCache.EFCore.csproj" />
+    <ProjectReference Include="..\..\src\QueryCache.Dapper\QueryCache.Dapper.csproj" />
+  </ItemGroup>
+
+</Project>

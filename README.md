@@ -68,6 +68,7 @@ A hit costs the same whatever the row count. A miss adds ~27 μs for EF Core and
 dotnet restore QueryCache.slnx
 dotnet build QueryCache.slnx --configuration Release
 dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj --configuration Release
+dotnet test --project tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release   # needs Docker: SQL Server + PostgreSQL via Testcontainers
 dotnet run --project benchmarks/QueryCache.Benchmarks/QueryCache.Benchmarks.csproj --configuration Release -- --filter *
 ```
 

@@ -20,3 +20,15 @@ jobs:
       - run: dotnet restore QueryCache.slnx
       - run: dotnet build QueryCache.slnx --configuration Release --no-restore
       - run: dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj --configuration Release --no-build
+
+  integration:
+    name: integration (SQL Server, PostgreSQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - run: dotnet restore tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj
+      - run: dotnet build tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release --no-restore
+      - run: dotnet test --project tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj --configuration Release --no-build

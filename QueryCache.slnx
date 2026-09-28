@@ -9,5 +9,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/QueryCache.Tests/QueryCache.Tests.csproj" />
+    <Project Path="tests/QueryCache.IntegrationTests/QueryCache.IntegrationTests.csproj" />
   </Folder>
 </Solution>

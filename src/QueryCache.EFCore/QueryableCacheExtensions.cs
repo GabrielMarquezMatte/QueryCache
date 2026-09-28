@@ -156,7 +156,14 @@ namespace QueryCache.EFCore
 
         private static IQueryable<T> NoTracking<T>(IQueryable<T> query)
         {
-            return typeof(T).IsValueType ? query : (IQueryable<T>)AsNoTrackingMethod.MakeGenericMethod(typeof(T)).Invoke(null, [query])!;
+            return NoTrackingOf<T>.Apply(query);
+        }
+
+        private static class NoTrackingOf<T>
+        {
+            public static readonly Func<IQueryable<T>, IQueryable<T>> Apply = typeof(T).IsValueType
+                ? static query => query
+                : AsNoTrackingMethod.MakeGenericMethod(typeof(T)).CreateDelegate<Func<IQueryable<T>, IQueryable<T>>>();
         }
     }
 }

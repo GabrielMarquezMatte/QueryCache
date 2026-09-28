@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="QueryCache.Tests" />
+    <InternalsVisibleTo Include="QueryCache.Benchmarks" />
   </ItemGroup>
 
   <ItemGroup>

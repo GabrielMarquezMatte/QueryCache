@@ -30,6 +30,22 @@ A hit is ~4.2x faster than the direct query at 10 rows and ~83x at 1,000 rows, a
 
 A miss costs a roughly constant ~26–27 μs over the direct query (2.2x at 10 rows, 1.06x at 1,000 rows). It pays for the invalidation and the key, and for walking the expression to find the tables the entry depends on, which only happens on a miss. Past a few hundred rows the query itself dominates and the overhead fades.
 
+### Where an EF Core miss goes
+
+`EfMissBreakdownBenchmarks` times each part of a miss on the same 10-row query:
+
+| Part | Mean | Allocated |
+|---|---:|---:|
+| Direct query (baseline) | 22.77 μs | 9.31 KB |
+| `CreateDbCommand` + key | 5.08 μs | 4.59 KB |
+| `CreateDbCommand` right before running the query | +7.78 μs | +4.39 KB |
+| Tables the query reads (tags) | 2.11 μs | 3.48 KB |
+| Cache store around the query | +2.31 μs | +0.62 KB |
+| `InvalidateCache()` (measured with every miss here) | 5.30 μs | 4.59 KB |
+| Whole miss, invalidation included | 49.37 μs | 23.35 KB |
+
+Most of the fixed cost is EF itself: `CreateDbCommand` translates (or looks up) the query to get the SQL the key is made of, and the benchmark pays it twice, once for the key and once inside `InvalidateCache()`. QueryCache's own work (tags and store) is ~4.4 μs. The parts add up to ~40 μs, so ~9 μs of the whole miss is not attributed to any single part. Building the query anew on every call, as application code does, does not change the picture: the miss still costs ~25 μs over the direct query (65.35 μs vs. 39.89 μs).
+
 ### Dapper
 
 | Scenario | 10 rows | 1,000 rows |
