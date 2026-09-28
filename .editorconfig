@@ -1,0 +1,83 @@
+root = true
+
+[*]
+charset = utf-8
+# lf, not crlf: every tracked file is committed LF, and CI runs the `dotnet format whitespace`
+# gate on Linux where nothing rewrites endings on checkout. Demanding crlf here only passes on
+# Windows, where core.autocrlf converts on checkout and hides the mismatch. See .gitattributes,
+# which pins eol=lf so no contributor's autocrlf setting can change what lands in a blob.
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+
+# STYLEGUIDE.md: "Every method ... must use a block body. Expression bodies (=>) are forbidden on
+# methods, no matter how short." Properties are exempted here (project preference overrides the
+# guide for the common one-line forwarding getter).
+csharp_style_expression_bodied_methods = false:warning
+csharp_style_expression_bodied_constructors = false:warning
+csharp_style_expression_bodied_operators = false:warning
+csharp_style_expression_bodied_local_functions = false:warning
+
+# STYLEGUIDE.md: "Always use braces on `if`, even single-line bodies. The linter enforces this."
+csharp_prefer_braces = true:warning
+
+# STYLEGUIDE.md ternary rule ("nested ternary" / "branches contain logic" forbidden) has no direct
+# analyzer id; IDE0045/IDE0046 (convert if to/from ternary) would fight that rule, so both are off.
+dotnet_diagnostic.IDE0045.severity = none
+dotnet_diagnostic.IDE0046.severity = none
+
+# Readers and writers hand stream/archive ownership across constructors and out parameters, and
+# dispose it on the failure path instead of in the method that created it. None of these three rules
+# can follow ownership that far, so every one of their reports here was a false positive carrying a
+# hand-written justification — 91 of them before this was turned off. The other IDISP rules still
+# run; they catch real leaks. Re-enable any of these if the ownership model ever stops being
+# constructor-transfer.
+dotnet_diagnostic.IDISP001.severity = none
+dotnet_diagnostic.IDISP007.severity = none
+dotnet_diagnostic.CA2000.severity = none
+
+# PooledStreamRowEnumerator provides Dispose/DisposeAsync for derived enumerators that declare
+# IExcelRowEnumerator themselves, so the base deliberately does not implement IDisposable. S2953 is
+# suppressed on that member for the same reason.
+dotnet_diagnostic.IDISP009.severity = none
+
+# MA0051 (method is too long) runs repo-wide rather than being suppressed, but calibrated up from the
+# 60-line / 40-statement defaults. At the defaults it reported 22 methods — mostly format parsers and
+# writers that decode one record layout in a single flat sequence — which is enough noise that the
+# rule had been switched off project-wide instead of read. 90/50 keeps it armed and pointed at
+# methods that are genuinely doing too much.
+#
+# Note the option names: this analyzer reads `maximum_lines_per_method`, NOT the `maximum_lines`
+# spelling in the older docs. A wrong key is silently ignored — the rule just keeps using its
+# defaults — so verify any change here actually moves the reported count.
+dotnet_diagnostic.MA0051.severity = warning
+MA0051.maximum_lines_per_method = 90
+MA0051.maximum_statements_per_method = 50
+
+# Naming: private fields _camelCase, private consts PascalCase, everything else PascalCase/camelCase
+# per STYLEGUIDE.md.
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+# Consts first — more specific than the general private-field rule below, so it must win. Rule order
+# matters: the first matching rule applies.
+dotnet_naming_symbols.private_consts.applicable_kinds = field
+dotnet_naming_symbols.private_consts.applicable_accessibilities = private
+dotnet_naming_symbols.private_consts.required_modifiers = const
+
+dotnet_naming_rule.private_consts_pascal_case.symbols = private_consts
+dotnet_naming_rule.private_consts_pascal_case.style = pascal_case
+dotnet_naming_rule.private_consts_pascal_case.severity = warning
+
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_fields.required_modifiers =
+
+dotnet_naming_rule.private_fields_underscore_camel_case.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore_camel_case.style = underscore_camel_case
+dotnet_naming_rule.private_fields_underscore_camel_case.severity = warning

@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/QueryCache.Core/QueryCache.Core.csproj" />
+    <Project Path="src/QueryCache.EFCore/QueryCache.EFCore.csproj" />
+    <Project Path="src/QueryCache.Dapper/QueryCache.Dapper.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/QueryCache.Tests/QueryCache.Tests.csproj" />
+  </Folder>
+</Solution>

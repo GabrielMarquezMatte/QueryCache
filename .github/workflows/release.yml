@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - run: dotnet restore QueryCache.slnx
+      - run: dotnet build QueryCache.slnx --configuration Release --no-restore -p:Version=${GITHUB_REF_NAME#v}
+      - run: dotnet test --project tests/QueryCache.Tests/QueryCache.Tests.csproj --configuration Release --no-build
+      - run: |
+          for p in QueryCache.Core QueryCache.EFCore QueryCache.Dapper; do
+            dotnet pack "src/$p/$p.csproj" --configuration Release --no-build -p:Version=${GITHUB_REF_NAME#v} --output ./artifacts
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: ./artifacts
