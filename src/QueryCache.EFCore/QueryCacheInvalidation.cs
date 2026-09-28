@@ -10,7 +10,7 @@ namespace QueryCache.EFCore
     /// <remarks>
     /// Entries are invalidated after the save and again when the surrounding transaction (EF or <see cref="TransactionScope"/>) commits,
     /// so readers on other connections cannot keep data they cached while the transaction was open.
-    /// <c>ExecuteUpdate</c>, <c>ExecuteDelete</c>, raw SQL and Dapper writes are not seen; call <c>InvalidateCache()</c> for those.
+    /// <c>ExecuteUpdate</c>, <c>ExecuteDelete</c>, raw SQL and Dapper writes are not seen; call <c>InvalidateCacheAsync()</c> for those.
     /// </remarks>
     public static class QueryCacheInvalidation
     {
@@ -52,23 +52,23 @@ namespace QueryCache.EFCore
                 .Distinct(StringComparer.Ordinal)];
         }
 
-        private static void Saved(DbContext? context)
+        private static ValueTask Saved(DbContext? context)
         {
             if (context is null || !States.TryGetValue(context, out var state))
             {
-                return;
+                return ValueTask.CompletedTask;
             }
             var tags = state.Saving;
             state.Saving = [];
-            QueryCacheStore.InvalidateTags(tags);
             if (context.Database.CurrentTransaction is not null)
             {
                 state.Pending.UnionWith(tags);
             }
             else if (Transaction.Current is { } ambient)
             {
-                ambient.TransactionCompleted += (_, _) => QueryCacheStore.InvalidateTags(tags);
+                ambient.TransactionCompleted += (_, _) => Wait(QueryCacheStore.InvalidateTagsAsync(tags, CancellationToken.None));
             }
+            return QueryCacheStore.InvalidateTagsAsync(tags, CancellationToken.None);
         }
 
         private static void Failed(DbContext? context)
@@ -79,17 +79,23 @@ namespace QueryCache.EFCore
             }
         }
 
-        private static void Ended(DbContext? context, bool committed)
+        private static ValueTask Ended(DbContext? context, bool committed)
         {
             if (context is null || !States.TryGetValue(context, out var state))
             {
-                return;
+                return ValueTask.CompletedTask;
             }
-            if (committed)
-            {
-                QueryCacheStore.InvalidateTags(state.Pending);
-            }
+            string[] tags = committed ? [.. state.Pending] : [];
             state.Pending.Clear();
+            return QueryCacheStore.InvalidateTagsAsync(tags, CancellationToken.None);
+        }
+
+        private static void Wait(ValueTask task)
+        {
+            if (!task.IsCompletedSuccessfully)
+            {
+                task.AsTask().GetAwaiter().GetResult();
+            }
         }
 
         private sealed class SaveChangesInvalidator : SaveChangesInterceptor
@@ -110,14 +116,14 @@ namespace QueryCache.EFCore
 
             public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
             {
-                Saved(eventData.Context);
+                Wait(Saved(eventData.Context));
                 return result;
             }
 
-            public override ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+            public override async ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
             {
-                Saved(eventData.Context);
-                return ValueTask.FromResult(result);
+                await Saved(eventData.Context).ConfigureAwait(false);
+                return result;
             }
 
             public override void SaveChangesFailed(DbContextErrorEventData eventData)
@@ -138,24 +144,22 @@ namespace QueryCache.EFCore
 
             public override void TransactionCommitted(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData)
             {
-                Ended(eventData.Context, committed: true);
+                Wait(Ended(eventData.Context, committed: true));
             }
 
             public override Task TransactionCommittedAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
             {
-                Ended(eventData.Context, committed: true);
-                return Task.CompletedTask;
+                return Ended(eventData.Context, committed: true).AsTask();
             }
 
             public override void TransactionRolledBack(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData)
             {
-                Ended(eventData.Context, committed: false);
+                Wait(Ended(eventData.Context, committed: false));
             }
 
             public override Task TransactionRolledBackAsync(System.Data.Common.DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
             {
-                Ended(eventData.Context, committed: false);
-                return Task.CompletedTask;
+                return Ended(eventData.Context, committed: false).AsTask();
             }
         }
     }

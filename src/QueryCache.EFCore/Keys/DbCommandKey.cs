@@ -4,7 +4,7 @@ namespace QueryCache.EFCore.Keys
 {
     internal static class DbCommandKey
     {
-        public static QueryKey Of(DbCommand command)
+        public static QueryKey Of(DbCommand command, string operation)
         {
             var values = new List<object?>(command.Parameters.Count * 2);
             foreach (DbParameter parameter in command.Parameters)
@@ -12,7 +12,7 @@ namespace QueryCache.EFCore.Keys
                 values.Add(parameter.ParameterName);
                 values.Add(parameter.Value);
             }
-            return new QueryKey($"{ConnectionScope.Of(command.Connection)}\n{command.CommandText}", values);
+            return new QueryKey($"{ConnectionScope.Of(command.Connection)}\n{operation}\n{command.CommandText}", values);
         }
     }
 }

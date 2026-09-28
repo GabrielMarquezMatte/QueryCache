@@ -3,7 +3,7 @@
 [![CI](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/GabrielMarquezMatte/QueryCache/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/GabrielMarquezMatte/QueryCache.svg)](LICENSE)
 
-In-process query-result cache for EF Core and Dapper on .NET 10.
+Query-result cache for EF Core and Dapper on .NET 10, in process or in any `HybridCache` (Redis, FusionCache...).
 
 QueryCache keeps query results in memory, keyed by the SQL, its parameter values and the database it ran against. A cache hit costs a few microseconds and never touches the database. Concurrent misses for the same query run it once. With EF Core, `SaveChanges` drops the entries that read the tables it wrote to.
 
@@ -20,7 +20,9 @@ services.AddDbContext<AppDb>(o => o.UseSqlServer(cs).UseQueryCacheInvalidation()
 
 var active = db.Users.Where(u => u.Active).Include(u => u.Roles).AsSplitQuery();
 var users = await active.ToListCachedAsync(TimeSpan.FromMinutes(5), ct);
-// SaveChanges touching Users or Roles drops that entry; ExecuteUpdate/raw SQL need active.InvalidateCache()
+// SaveChanges touching Users or Roles drops that entry; ExecuteUpdate/raw SQL need await active.InvalidateCacheAsync(ct)
+
+var revenue = await db.Orders.Where(o => o.Paid).Select(o => o.Total).SumCachedAsync(TimeSpan.FromMinutes(1), ct);
 ```
 
 ```csharp
@@ -32,9 +34,27 @@ var row = await conn.ToCacheQuery<int>(new CommandDefinition("select id from t w
 
 | Package | What |
 |---|---|
-| `QueryCache.Core` | `QueryCacheStore`: cache keyed by `QueryKey`, single-flight, tag invalidation. No DB dependency. |
-| `QueryCache.EFCore` | `IQueryable<T>` extensions: `ToListCachedAsync/ToDictionaryCachedAsync/FirstOrDefaultCachedAsync/FirstCachedAsync/AnyCachedAsync/CountCachedAsync(expiration, ct)`, `InvalidateCache()`, and `UseQueryCacheInvalidation()` for `SaveChanges`. |
-| `QueryCache.Dapper` | `DapperCacheQuery<T>` (`connection.ToCacheQuery<T>(command)`): `QueryAsync/QueryFirstOrDefaultAsync/ExecuteScalarAsync(expiration, ct)` and `InvalidateCache()`. |
+| `QueryCache.Core` | `QueryCacheStore`: cache keyed by `QueryKey`, single-flight, tag invalidation, in-process LRU or `HybridCache`. No DB dependency. |
+| `QueryCache.EFCore` | `IQueryable<T>` extensions: `ToListCachedAsync/ToDictionaryCachedAsync/FirstOrDefaultCachedAsync/FirstCachedAsync/SingleOrDefaultCachedAsync/AnyCachedAsync/CountCachedAsync/SumCachedAsync/MaxCachedAsync(expiration, ct)`, `InvalidateCacheAsync(ct)`, and `UseQueryCacheInvalidation()` for `SaveChanges`. |
+| `QueryCache.Dapper` | `DapperCacheQuery<T>` (`connection.ToCacheQuery<T>(command)`): `QueryAsync/QueryFirstOrDefaultAsync/ExecuteScalarAsync(expiration, ct)` and `InvalidateCacheAsync(ct)`. |
+
+### Distributed cache
+
+By default entries live in process. To share them (and their invalidation) between instances, hand QueryCache a `HybridCache` at startup:
+
+```csharp
+builder.Services.AddStackExchangeRedisCache(o => o.Configuration = redis);
+builder.Services.AddHybridCache();                    // or FusionCache: AddFusionCache().WithBackplane(...).AsHybridCache()
+var app = builder.Build();
+QueryCacheStore.HybridCache = app.Services.GetRequiredService<HybridCache>();
+```
+
+Keys and tags are SHA-256 digests (no SQL or connection string in Redis). `SaveChanges`, `InvalidateCacheAsync` and expiration work the same. The trade-offs:
+
+- Results must be serializable by the cache's serializer (System.Text.Json by default). EF entities with reference cycles (`Include` both ways) need a projection or a custom serializer.
+- A hit deserializes, so it costs more than the in-process hit and grows with the row count; callers get their own copies.
+- Microsoft's `HybridCache` has no backplane: other instances keep their local copy until its `LocalCacheExpiration`. Keep that short, or use FusionCache with a backplane.
+- Single-flight is per process.
 
 ## Benchmarks
 
@@ -47,7 +67,7 @@ Direct query against a cache hit, on in-memory SQLite (no network or disk, so th
 | Dapper | 10 | 8.99 μs, 3.23 KB | 0.29 μs, 688 B | ~31x |
 | Dapper | 1,000 | 399.69 μs, 135.14 KB | 0.29 μs, 688 B | ~1,360x |
 
-A hit costs the same whatever the row count. A miss adds ~27 μs for EF Core and ~2–11 μs for Dapper over the direct query. Methodology, miss costs and how to run them: [Benchmarks](docs/performance/benchmarks.md).
+A hit costs the same whatever the row count. A miss adds ~32 μs for EF Core and ~2–11 μs for Dapper over the direct query. Methodology, miss costs and how to run them: [Benchmarks](docs/performance/benchmarks.md).
 
 ## Notes
 
@@ -55,10 +75,11 @@ A hit costs the same whatever the row count. A miss adds ~27 μs for EF Core and
 - Lists are read-only (`IReadOnlyList<T>`) because every caller gets the same instance; do not mutate the entities either.
 - **Key**: SQL + parameter **values** (compared exactly, arrays item by item) + connection string without password.
 - **Transactions**: reads inside a transaction (EF, Dapper `command.Transaction`, or `TransactionScope`) skip the cache.
-- **`SaveChanges`** (with `UseQueryCacheInvalidation()`): drops entries that read the written tables, and again on commit. `ExecuteUpdate`, `ExecuteDelete`, raw SQL and Dapper writes are not seen; call `InvalidateCache()` for those.
+- **`SaveChanges`** (with `UseQueryCacheInvalidation()`): drops entries that read the written tables, and again on commit. `ExecuteUpdate`, `ExecuteDelete`, raw SQL and Dapper writes are not seen; call `InvalidateCacheAsync(ct)` for those.
+- `SumCachedAsync` / `MaxCachedAsync` work on a projection: `query.Select(x => x.Price).SumCachedAsync(...)`. Each operator has its own entry, so `First` never answers `Single`.
 - **No rows** (empty collections, `null`, `0`, `false`): returned, never cached.
 - **Single-flight**: concurrent misses run the query once and share its result or its exception.
-- `QueryCacheStore.Capacity` sets the entries kept per result type (default 128); set it at startup. `Timeout.InfiniteTimeSpan` keeps an entry until removed or evicted; zero or negative expirations throw.
+- `QueryCacheStore.Capacity` sets the in-process entries kept per result type (default 128); set it at startup. `Timeout.InfiniteTimeSpan` keeps an entry until removed or evicted; zero or negative expirations throw.
 - To skip the cache, call EF/Dapper directly.
 - Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`, `querycache.fill.duration` (s), tagged with `querycache.type`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
 

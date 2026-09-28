@@ -12,7 +12,7 @@ Benchmarks were run with BenchmarkDotNet v0.15.8 (default job) on Windows 10 (22
 
 - **Direct**: the library's own call, no cache (`AsNoTracking().ToListAsync()` for EF Core, `QueryAsync<T>()` materialized to a `List<T>` for Dapper). This is the baseline.
 - **Cache hit**: `ToListCachedAsync` / `DapperCacheQuery<T>.QueryAsync` with a warm entry.
-- **Cache miss**: `InvalidateCache()` followed by the cached call, so every iteration runs the query and fills the entry. The invalidation is part of the measured time.
+- **Cache miss**: `InvalidateCacheAsync()` followed by the cached call, so every iteration runs the query and fills the entry. The invalidation is part of the measured time.
 
 In-memory SQLite has no network and no disk, so the direct query is as cheap as it gets. **The hit ratios below are the floor**: against SQL Server or PostgreSQL over a network, the direct query costs milliseconds while a hit costs the same few microseconds.
 
@@ -24,11 +24,11 @@ Before measuring, `GlobalSetup` validates the cache and aborts the run if any ch
 |---|---:|---:|
 | Direct (baseline) | 22.74 μs, 9.46 KB | 458.36 μs, 280.44 KB |
 | Cache hit | 5.39 μs, 4.75 KB | 5.53 μs, 4.75 KB |
-| Cache miss | 50.20 μs, 23.31 KB | 484.39 μs, 294.55 KB |
+| Cache miss | 54.75 μs, 26.29 KB | 509.31 μs, 297.54 KB |
 
 A hit is ~4.2x faster than the direct query at 10 rows and ~83x at 1,000 rows, and costs the same ~5.5 μs and 4.75 KB whatever the row count. Most of that fixed cost is EF building the command (`CreateDbCommand`) to get the SQL and parameter values the key is made of: the query is never executed, but EF still has to look up its translation.
 
-A miss costs a roughly constant ~26–27 μs over the direct query (2.2x at 10 rows, 1.06x at 1,000 rows). It pays for the invalidation and the key, and for walking the expression to find the tables the entry depends on, which only happens on a miss. Past a few hundred rows the query itself dominates and the overhead fades.
+A miss costs ~32 μs over the direct query at 10 rows (2.4x) and ~1.1x at 1,000 rows. It pays for the invalidation (which drops the entries of all seven cached operators) and the key, and for walking the expression to find the tables the entry depends on, which only happens on a miss. Past a few hundred rows the query itself dominates and the overhead fades.
 
 ### Where an EF Core miss goes
 
@@ -41,10 +41,12 @@ A miss costs a roughly constant ~26–27 μs over the direct query (2.2x at 10 r
 | `CreateDbCommand` right before running the query | +7.78 μs | +4.39 KB |
 | Tables the query reads (tags) | 2.11 μs | 3.48 KB |
 | Cache store around the query | +2.31 μs | +0.62 KB |
-| `InvalidateCache()` (measured with every miss here) | 5.30 μs | 4.59 KB |
-| Whole miss, invalidation included | 49.37 μs | 23.35 KB |
+| `InvalidateCacheAsync()` (measured with every miss here) | 7.27 μs | 7.83 KB |
+| Whole miss, invalidation included | 53.35 μs | 26.37 KB |
 
-Most of the fixed cost is EF itself: `CreateDbCommand` translates (or looks up) the query to get the SQL the key is made of, and the benchmark pays it twice, once for the key and once inside `InvalidateCache()`. QueryCache's own work (tags and store) is ~4.4 μs. The parts add up to ~40 μs, so ~9 μs of the whole miss is not attributed to any single part. Building the query anew on every call, as application code does, does not change the picture: the miss still costs ~25 μs over the direct query (65.35 μs vs. 39.89 μs).
+The cache-miss and invalidation rows were re-measured after invalidation started covering SingleOrDefault, Sum and Max; the other rows are from the earlier run.
+
+Most of the fixed cost is EF itself: `CreateDbCommand` translates (or looks up) the query to get the SQL the key is made of, and the benchmark pays it twice, once for the key and once inside `InvalidateCacheAsync()`. QueryCache's own work (tags and store) is ~4.4 μs. The parts add up to ~42 μs, so ~11 μs of the whole miss is not attributed to any single part. Building the query anew on every call, as application code does, does not change the picture: the miss still costs ~25 μs over the direct query (65.35 μs vs. 39.89 μs).
 
 ### Dapper
 

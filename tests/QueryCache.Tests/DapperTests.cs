@@ -148,7 +148,7 @@ public sealed class DapperTests
         await connection.ExecuteAsync("delete from t");
 
         Assert.Equal(5, await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
-        Assert.True(query.InvalidateCache());
+        await query.InvalidateCacheAsync(CancellationToken.None);
         Assert.Equal(0, await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
     }
 
@@ -162,8 +162,7 @@ public sealed class DapperTests
         await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None);
         await connection.ExecuteAsync("delete from t");
 
-        Assert.True(query.InvalidateCache());
-        Assert.False(query.InvalidateCache());
+        await query.InvalidateCacheAsync(CancellationToken.None);
         Assert.Empty(await query.QueryAsync(Minute, CancellationToken.None));
         Assert.Equal(0, await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
     }
@@ -193,7 +192,7 @@ public sealed class DapperTests
         await connection.ExecuteAsync("delete from t");
 
         Assert.Equal(9, await query.ExecuteScalarAsync(Minute, CancellationToken.None));
-        Assert.True(query.InvalidateCache());
+        await query.InvalidateCacheAsync(CancellationToken.None);
         Assert.Equal(0, await query.ExecuteScalarAsync(Minute, CancellationToken.None));
     }
 

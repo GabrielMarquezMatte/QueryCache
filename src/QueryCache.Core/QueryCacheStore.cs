@@ -3,12 +3,16 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Extensions.Caching.Hybrid;
 
 namespace QueryCache;
 
 /// <summary>
-/// Process-wide cache of query results, keyed by <see cref="QueryKey"/>. One LRU per result type.
-/// Concurrent misses for the same key run the factory once (single-flight) and share its result or failure.
+/// Process-wide cache of query results, keyed by <see cref="QueryKey"/>. By default one in-process LRU per result type;
+/// set <see cref="HybridCache"/> to keep entries in a <see cref="Microsoft.Extensions.Caching.Hybrid.HybridCache"/> instead (Redis, FusionCache...).
+/// Concurrent misses for the same key run the factory once per process (single-flight) and share its result or failure.
 /// Results meaning "no rows" are returned but not kept: <see langword="default"/> values (<see langword="null"/>, 0, <see langword="false"/>) and empty collections.
 /// </summary>
 /// <remarks>
@@ -26,6 +30,7 @@ public static class QueryCacheStore
     private static readonly Histogram<double> FillDuration = Meter.CreateHistogram<double>("querycache.fill.duration", "s", "Time spent running the query on a miss.");
 
     private static readonly TimeSpan MaxExpiration = TimeSpan.FromDays(36500);
+    private static readonly HybridCacheEntryOptions ReadOnly = new() { Flags = HybridCacheEntryFlags.DisableUnderlyingData };
 
     private static readonly ConcurrentDictionary<(QueryKey, Type), Flight> Flights = new();
     private static readonly ConcurrentDictionary<string, long> TagVersions = new(StringComparer.Ordinal);
@@ -33,7 +38,7 @@ public static class QueryCacheStore
     private static int _capacity = 128;
 
     /// <summary>
-    /// Maximum entries kept per result type (least recently used are evicted). Default 128, minimum 3.
+    /// Maximum entries kept per result type by the in-process LRU (least recently used are evicted). Default 128, minimum 3.
     /// A result type's cache is sized when first used, so set this at startup.
     /// </summary>
     public static int Capacity
@@ -46,6 +51,13 @@ public static class QueryCacheStore
         }
     }
 
+    /// <summary>
+    /// Where entries live. <see langword="null"/> (default): the in-process LRU, where a hit hands back the cached instance.
+    /// Set it at startup, for example to <c>app.Services.GetRequiredService&lt;HybridCache&gt;()</c>, to share entries and invalidations
+    /// between instances through the cache's distributed layer. Results must then be serializable by its serializer, and a hit costs a deserialization.
+    /// </summary>
+    public static HybridCache? HybridCache { get; set; }
+
     private abstract class Flight
     {
         public volatile bool Invalidated;
@@ -56,12 +68,11 @@ public static class QueryCacheStore
         public readonly TaskCompletionSource<T> Result = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    /// <summary>Tries to read a live entry.</summary>
-    public static bool TryGet<T>(QueryKey key, [MaybeNullWhen(false)] out T value)
+    internal static bool TryGet<T>(QueryKey key, [MaybeNullWhen(false)] out T value)
     {
         if (CacheHolder<T>.Cache.TryGet(key, out var entry))
         {
-            if (IsCurrent(entry))
+            if (IsCurrent(entry.Tags, entry.Versions))
             {
                 value = entry.Value;
                 return true;
@@ -72,27 +83,36 @@ public static class QueryCacheStore
         return false;
     }
 
-    /// <summary>Removes an entry. Returns <see langword="true"/> if it existed. A fill already running for the key is not cached.</summary>
-    public static bool Remove<T>(QueryKey key)
+    /// <summary>Removes an entry. A fill already running for the key in this process is not cached.</summary>
+    /// <param name="key">Cache key.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    public static ValueTask RemoveAsync<T>(QueryKey key, CancellationToken cancellationToken)
     {
         if (Flights.TryGetValue((key, typeof(T)), out var flight))
         {
             flight.Invalidated = true;
         }
-        return CacheHolder<T>.Cache.TryRemove(key);
+        if (HybridCache is { } hybrid)
+        {
+            return hybrid.RemoveAsync(HybridKey<T>(key), cancellationToken);
+        }
+        CacheHolder<T>.Cache.TryRemove(key);
+        return ValueTask.CompletedTask;
     }
 
-    /// <summary>
-    /// Invalidates every entry filled with any of <paramref name="tags"/>, including fills still running.
-    /// Entries are dropped lazily, on their next read.
-    /// </summary>
+    /// <summary>Invalidates every entry filled with any of <paramref name="tags"/>, including fills still running in this process.</summary>
     /// <param name="tags">The tags to invalidate, such as the tables a write touched.</param>
-    public static void InvalidateTags(params IEnumerable<string> tags)
+    /// <param name="cancellationToken">The cancellation token.</param>
+    public static ValueTask InvalidateTagsAsync(IEnumerable<string> tags, CancellationToken cancellationToken)
     {
-        foreach (var tag in tags)
+        string[] list = [.. tags];
+        foreach (var tag in list)
         {
             TagVersions.AddOrUpdate(tag, 1, static (_, version) => version + 1);
         }
+        return list.Length > 0 && HybridCache is { } hybrid
+            ? hybrid.RemoveByTagAsync(HybridTags(list), cancellationToken)
+            : ValueTask.CompletedTask;
     }
 
     /// <summary>Returns the cached value, or runs <paramref name="factory"/> once per key and caches the result for <paramref name="expiration"/>.</summary>
@@ -109,7 +129,7 @@ public static class QueryCacheStore
     /// <param name="key">Cache key.</param>
     /// <param name="expiration">How long the result lives. <see cref="Timeout.InfiniteTimeSpan"/> keeps it until removed or evicted.</param>
     /// <param name="factory">Produces the value on a miss.</param>
-    /// <param name="tags">Tags the entry depends on; <see cref="InvalidateTags"/> on any of them drops it.</param>
+    /// <param name="tags">Tags the entry depends on; <see cref="InvalidateTagsAsync"/> on any of them drops it.</param>
     /// <param name="cancellationToken">Cancels this caller's wait; passed to <paramref name="factory"/> when this caller runs it.</param>
     public static ValueTask<T> GetOrAddAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, IReadOnlyCollection<string> tags, CancellationToken cancellationToken)
     {
@@ -129,19 +149,31 @@ public static class QueryCacheStore
             expiration = MaxExpiration;
         }
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(expiration, TimeSpan.Zero);
+        var hybrid = HybridCache;
         while (true)
         {
-            if (TryGet<T>(key, out var cached))
+            bool found;
+            T? cached;
+            if (hybrid is null)
+            {
+                found = TryGet(key, out cached);
+            }
+            else
+            {
+                cached = await hybrid.GetOrCreateAsync(HybridKey<T>(key), static _ => ValueTask.FromResult(default(T)!), ReadOnly, cancellationToken: cancellationToken).ConfigureAwait(false);
+                found = !IsEmpty(cached);
+            }
+            if (found)
             {
                 Hits.Add(1, CacheHolder<T>.TypeTag);
-                return cached;
+                return cached!;
             }
             cancellationToken.ThrowIfCancellationRequested();
             var mine = new Flight<T>();
             var flight = (Flight<T>)Flights.GetOrAdd((key, typeof(T)), mine);
             if (ReferenceEquals(flight, mine))
             {
-                return await FillAsync(key, expiration, factory, tags, mine, cancellationToken).ConfigureAwait(false);
+                return await FillAsync(hybrid, key, expiration, factory, tags, mine, cancellationToken).ConfigureAwait(false);
             }
             try
             {
@@ -155,8 +187,8 @@ public static class QueryCacheStore
         }
     }
 
-    private static async Task<T> FillAsync<T>(QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory, Func<IReadOnlyCollection<string>> tagSource,
-                                              Flight<T> flight, CancellationToken cancellationToken)
+    private static async Task<T> FillAsync<T>(HybridCache? hybrid, QueryKey key, TimeSpan expiration, Func<CancellationToken, Task<T>> factory,
+                                              Func<IReadOnlyCollection<string>> tagSource, Flight<T> flight, CancellationToken cancellationToken)
     {
         Misses.Add(1, CacheHolder<T>.TypeTag);
         var start = Stopwatch.GetTimestamp();
@@ -168,11 +200,7 @@ public static class QueryCacheStore
             FillDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, CacheHolder<T>.TypeTag);
             if (!IsEmpty(value))
             {
-                CacheHolder<T>.Cache.AddOrUpdate(key, new Entry<T>(value, expiration, tags, versions));
-                if (flight.Invalidated)
-                {
-                    CacheHolder<T>.Cache.TryRemove(key);
-                }
+                await StoreAsync(hybrid, key, new Entry<T>(value, expiration, tags, versions), flight, cancellationToken).ConfigureAwait(false);
             }
             flight.Result.SetResult(value);
             return value;
@@ -189,11 +217,49 @@ public static class QueryCacheStore
         }
     }
 
-    private static bool IsCurrent<T>(Entry<T> entry)
+    private static async ValueTask StoreAsync<T>(HybridCache? hybrid, QueryKey key, Entry<T> entry, Flight flight, CancellationToken cancellationToken)
     {
-        for (var i = 0; i < entry.Tags.Length; i++)
+        if (hybrid is null)
         {
-            if (TagVersions.GetValueOrDefault(entry.Tags[i]) != entry.Versions[i])
+            CacheHolder<T>.Cache.AddOrUpdate(key, entry);
+            if (flight.Invalidated)
+            {
+                CacheHolder<T>.Cache.TryRemove(key);
+            }
+            return;
+        }
+        if (flight.Invalidated || !IsCurrent(entry.Tags, entry.Versions))
+        {
+            return;
+        }
+        var hybridKey = HybridKey<T>(key);
+        await hybrid.SetAsync(hybridKey, entry.Value, new HybridCacheEntryOptions { Expiration = entry.Expiration }, HybridTags(entry.Tags), cancellationToken).ConfigureAwait(false);
+        if (flight.Invalidated || !IsCurrent(entry.Tags, entry.Versions))
+        {
+            await hybrid.RemoveAsync(hybridKey, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static string HybridKey<T>(QueryKey key)
+    {
+        return $"querycache:{Digest($"{typeof(T)}\n{key.StableText()}")}";
+    }
+
+    private static string[] HybridTags(string[] tags)
+    {
+        return Array.ConvertAll(tags, static tag => $"querycache:{Digest(tag)}");
+    }
+
+    private static string Digest(string text)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+    }
+
+    private static bool IsCurrent(string[] tags, long[] versions)
+    {
+        for (var i = 0; i < tags.Length; i++)
+        {
+            if (TagVersions.GetValueOrDefault(tags[i]) != versions[i])
             {
                 return false;
             }

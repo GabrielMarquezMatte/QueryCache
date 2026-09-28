@@ -78,7 +78,7 @@ namespace QueryCache.Benchmarks
             _db.Items.Remove(_db.Items.Single(i => i.Id == Rows * 2 + 1));
             await _db.SaveChangesAsync();
             _db.ChangeTracker.Clear();
-            _dapper.InvalidateCache();
+            await _dapper.InvalidateCacheAsync(CancellationToken.None);
 
             Console.WriteLine($"// Cache validated for {Rows} rows: same rows as the database, repeats served from cache, SaveChanges invalidates.");
         }
@@ -111,10 +111,10 @@ namespace QueryCache.Benchmarks
         }
 
         [Benchmark, BenchmarkCategory("EF")]
-        public ValueTask<IReadOnlyList<Item>> Ef_CacheMiss()
+        public async ValueTask<IReadOnlyList<Item>> Ef_CacheMiss()
         {
-            _query.InvalidateCache();
-            return _query.ToListCachedAsync(Expiration, CancellationToken.None);
+            await _query.InvalidateCacheAsync(CancellationToken.None);
+            return await _query.ToListCachedAsync(Expiration, CancellationToken.None);
         }
 
         [Benchmark(Baseline = true), BenchmarkCategory("Dapper")]
@@ -130,10 +130,10 @@ namespace QueryCache.Benchmarks
         }
 
         [Benchmark, BenchmarkCategory("Dapper")]
-        public ValueTask<IReadOnlyList<Item>> Dapper_CacheMiss()
+        public async ValueTask<IReadOnlyList<Item>> Dapper_CacheMiss()
         {
-            _dapper.InvalidateCache();
-            return _dapper.QueryAsync(Expiration, CancellationToken.None);
+            await _dapper.InvalidateCacheAsync(CancellationToken.None);
+            return await _dapper.QueryAsync(Expiration, CancellationToken.None);
         }
     }
 }

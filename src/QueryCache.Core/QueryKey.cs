@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Text.Json;
 
 namespace QueryCache;
 
@@ -52,6 +53,20 @@ public sealed class QueryKey : IEquatable<QueryKey>
     }
 
     private sealed record Sequence(int Count);
+
+    /// <summary>The text and values as one string that is equal across processes for equal keys, for caches keyed by string.</summary>
+    internal string StableText()
+    {
+        var parts = new string?[1 + (2 * _values.Length)];
+        parts[0] = _text;
+        for (var i = 0; i < _values.Length; i++)
+        {
+            var type = _values[i]?.GetType();
+            parts[1 + (2 * i)] = type?.FullName;
+            parts[2 + (2 * i)] = JsonSerializer.Serialize(_values[i], type ?? typeof(object));
+        }
+        return JsonSerializer.Serialize(parts);
+    }
 
     /// <inheritdoc/>
     public bool Equals(QueryKey? other)

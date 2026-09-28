@@ -9,7 +9,7 @@
     <PackageId>QueryCache.Core</PackageId>
     <Version>1.0.0</Version>
     <Authors>Gabriel Matte</Authors>
-    <Description>In-process async query-result cache primitives (LRU, per-item expiry, single-flight) shared by QueryCache.EFCore and QueryCache.Dapper.</Description>
+    <Description>Async query-result cache primitives (in-process LRU or any HybridCache, per-item expiry, single-flight, tag invalidation) shared by QueryCache.EFCore and QueryCache.Dapper.</Description>
     <PackageTags>cache;query;lru</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -37,6 +37,7 @@
 
   <ItemGroup>
     <PackageReference Include="BitFaster.Caching" Version="2.5.4" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.3" />
   </ItemGroup>
 
 </Project>

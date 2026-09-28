@@ -46,7 +46,7 @@ public class EfMissBreakdownBenchmarks
     public QueryKey CommandAndKey()
     {
         using var command = _query.CreateDbCommand();
-        return DbCommandKey.Of(command);
+        return DbCommandKey.Of(command, "list");
     }
 
     [Benchmark]
@@ -56,17 +56,17 @@ public class EfMissBreakdownBenchmarks
     }
 
     [Benchmark]
-    public bool InvalidateOnly()
+    public ValueTask InvalidateOnly()
     {
-        return _query.InvalidateCache();
+        return _query.InvalidateCacheAsync(CancellationToken.None);
     }
 
     [Benchmark]
-    public ValueTask<IReadOnlyList<Item>> StoreMissAroundDirect()
+    public async ValueTask<IReadOnlyList<Item>> StoreMissAroundDirect()
     {
         var key = new QueryKey("breakdown");
-        QueryCacheStore.Remove<IReadOnlyList<Item>>(key);
-        return QueryCacheStore.GetOrAddAsync(key, Expiration, async ct => (IReadOnlyList<Item>)(await _query.AsNoTracking().ToListAsync(ct)).AsReadOnly(), CancellationToken.None);
+        await QueryCacheStore.RemoveAsync<IReadOnlyList<Item>>(key, CancellationToken.None);
+        return await QueryCacheStore.GetOrAddAsync(key, Expiration, async ct => (IReadOnlyList<Item>)(await _query.AsNoTracking().ToListAsync(ct)).AsReadOnly(), CancellationToken.None);
     }
 
     [Benchmark]
@@ -95,9 +95,9 @@ public class EfMissBreakdownBenchmarks
     }
 
     [Benchmark]
-    public ValueTask<IReadOnlyList<Item>> FullMiss()
+    public async ValueTask<IReadOnlyList<Item>> FullMiss()
     {
-        _query.InvalidateCache();
-        return _query.ToListCachedAsync(Expiration, CancellationToken.None);
+        await _query.InvalidateCacheAsync(CancellationToken.None);
+        return await _query.ToListCachedAsync(Expiration, CancellationToken.None);
     }
 }

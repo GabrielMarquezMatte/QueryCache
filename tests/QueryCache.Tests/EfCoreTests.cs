@@ -26,7 +26,7 @@ public sealed class EfCoreTests
         public Item? Item { get; set; }
     }
 
-    private sealed class CommandCounter : DbCommandInterceptor
+    internal sealed class CommandCounter : DbCommandInterceptor
     {
         public int Count;
 
@@ -42,7 +42,7 @@ public sealed class EfCoreTests
         public int Id { get; set; }
     }
 
-    private sealed class Db(SqliteConnection connection, CommandCounter counter)
+    internal sealed class Db(SqliteConnection connection, CommandCounter counter)
         : DbContext(new DbContextOptionsBuilder<Db>().UseSqlite(connection).AddInterceptors(counter).UseQueryCacheInvalidation().Options)
     {
         public DbSet<Item> Items => Set<Item>();
@@ -56,7 +56,7 @@ public sealed class EfCoreTests
         }
     }
 
-    private static Task<Db> NewDb(params Item[] items)
+    internal static Task<Db> NewDb(params Item[] items)
     {
         return NewDb($"{Guid.NewGuid():N};Mode=Memory;Cache=Shared", items);
     }
@@ -90,9 +90,8 @@ public sealed class EfCoreTests
 
         Assert.Single(first);
         Assert.Single(second);
-        Assert.True(query.InvalidateCache());
+        await query.InvalidateCacheAsync(CancellationToken.None);
         Assert.Empty(await query.ToListCachedAsync(Minute, CancellationToken.None));
-        Assert.False(query.InvalidateCache());
     }
 
     [Fact]
@@ -166,7 +165,7 @@ public sealed class EfCoreTests
         await db.Items.ExecuteDeleteAsync();
 
         Assert.NotNull(await query.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
-        Assert.True(query.InvalidateCache());
+        await query.InvalidateCacheAsync(CancellationToken.None);
         Assert.Null(await query.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
     }
 
@@ -206,9 +205,51 @@ public sealed class EfCoreTests
 
         Assert.True(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
         Assert.Equal(2, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
-        Assert.True(db.Items.InvalidateCache());
+        await db.Items.InvalidateCacheAsync(CancellationToken.None);
         Assert.False(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
         Assert.Equal(0, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Sum_Max_and_Count_over_the_same_query_are_cached_separately_until_invalidated()
+    {
+        await using var db = await NewDb(new Item { Id = 1, Code = 3 }, new Item { Id = 2, Code = 4 });
+        var codes = db.Items.Select(i => i.Code);
+
+        Assert.Equal(7, await codes.SumCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(4, await codes.MaxCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(2, await codes.CountCachedAsync(Minute, CancellationToken.None));
+        await db.Items.ExecuteDeleteAsync();
+
+        Assert.Equal(7, await codes.SumCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(4, await codes.MaxCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(2, await codes.CountCachedAsync(Minute, CancellationToken.None));
+        await codes.InvalidateCacheAsync(CancellationToken.None);
+        Assert.Equal(0, await codes.SumCachedAsync(Minute, CancellationToken.None));
+        Assert.Null(await codes.Select(c => (int?)c).MaxCachedAsync(Minute, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await codes.MaxCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Sum_of_an_unsupported_type_is_rejected()
+    {
+        await Assert.ThrowsAsync<NotSupportedException>(async () => await Enumerable.Empty<string>().AsQueryable().SumCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task SingleOrDefaultCachedAsync_does_not_reuse_the_first_row_entry()
+    {
+        await using var db = await NewDb(new Item { Id = 1 }, new Item { Id = 2 });
+
+        Assert.NotNull(await db.Items.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await db.Items.SingleOrDefaultCachedAsync(Minute, CancellationToken.None));
+
+        var one = db.Items.Where(i => i.Id == 1);
+        Assert.Equal(1, (await one.SingleOrDefaultCachedAsync(Minute, CancellationToken.None))?.Id);
+        await db.Items.ExecuteDeleteAsync();
+        Assert.Equal(1, (await one.SingleOrDefaultCachedAsync(Minute, CancellationToken.None))?.Id);
+        await one.InvalidateCacheAsync(CancellationToken.None);
+        Assert.Null(await one.SingleOrDefaultCachedAsync(Minute, CancellationToken.None));
     }
 
     [Fact]
@@ -221,8 +262,8 @@ public sealed class EfCoreTests
             return command;
         }
 
-        Assert.Equal(DbCommandKey.Of(Command([1, 2])), DbCommandKey.Of(Command([1, 2])));
-        Assert.NotEqual(DbCommandKey.Of(Command([1, 2])), DbCommandKey.Of(Command([2, 1])));
+        Assert.Equal(DbCommandKey.Of(Command([1, 2]), "list"), DbCommandKey.Of(Command([1, 2]), "list"));
+        Assert.NotEqual(DbCommandKey.Of(Command([1, 2]), "list"), DbCommandKey.Of(Command([2, 1]), "list"));
     }
 
     [Fact]

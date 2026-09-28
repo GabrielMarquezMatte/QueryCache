@@ -4,7 +4,7 @@ using Dapper;
 
 namespace QueryCache.Dapper
 {
-    /// <summary>A Dapper command whose results are cached in-process, keyed by connection (without password), SQL text and parameter values.</summary>
+    /// <summary>A Dapper command whose results are cached (see <see cref="QueryCacheStore.HybridCache"/>), keyed by connection (without password), SQL text and parameter values.</summary>
     /// <remarks>
     /// Commands with a transaction, or run inside a <see cref="TransactionScope"/>, skip the cache.
     /// Hit/miss metrics are published by <see cref="QueryCacheStore"/> on the <see cref="QueryCacheStore.MeterName"/> meter.
@@ -64,11 +64,12 @@ namespace QueryCache.Dapper
 
         /// <summary>Removes every cached result of this command (<see cref="QueryAsync(TimeSpan, CancellationToken)"/>,
         /// <see cref="QueryFirstOrDefaultAsync(TimeSpan, CancellationToken)"/> and <see cref="ExecuteScalarAsync(TimeSpan, CancellationToken)"/>).</summary>
-        /// <returns><see langword="true"/> if anything was removed.</returns>
-        public bool InvalidateCache()
+        /// <param name="cancellationToken">The cancellation token.</param>
+        public async ValueTask InvalidateCacheAsync(CancellationToken cancellationToken)
         {
             var key = Key;
-            return QueryCacheStore.Remove<IReadOnlyList<T>>(key) | QueryCacheStore.Remove<T>(key);
+            await QueryCacheStore.RemoveAsync<IReadOnlyList<T>>(key, cancellationToken).ConfigureAwait(false);
+            await QueryCacheStore.RemoveAsync<T>(key, cancellationToken).ConfigureAwait(false);
         }
         /// <inheritdoc/>
         public bool Equals(DapperCacheQuery<T>? other)

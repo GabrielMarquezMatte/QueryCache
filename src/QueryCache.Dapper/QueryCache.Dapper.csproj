@@ -9,7 +9,7 @@
     <PackageId>QueryCache.Dapper</PackageId>
     <Version>1.0.0</Version>
     <Authors>Gabriel Matte</Authors>
-    <Description>Cache Dapper query results in-process, keyed by SQL text, parameter values and connection string.</Description>
+    <Description>Cache Dapper query results in-process or in any HybridCache, keyed by SQL text, parameter values and connection string.</Description>
     <PackageTags>cache;query;dapper</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>

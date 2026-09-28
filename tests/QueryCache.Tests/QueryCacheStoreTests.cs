@@ -204,9 +204,8 @@ public sealed class QueryCacheStoreTests
     {
         var key = Key(nameof(Remove_evicts_entry));
         await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("v"), CancellationToken.None);
-        Assert.True(QueryCacheStore.Remove<string>(key));
+        await QueryCacheStore.RemoveAsync<string>(key, CancellationToken.None);
         Assert.False(QueryCacheStore.TryGet<string>(key, out _));
-        Assert.False(QueryCacheStore.Remove<string>(key));
     }
 
     [Fact]
@@ -223,7 +222,7 @@ public sealed class QueryCacheStoreTests
         }, CancellationToken.None).AsTask();
 
         await started.Task;
-        QueryCacheStore.Remove<string>(key);
+        await QueryCacheStore.RemoveAsync<string>(key, CancellationToken.None);
         release.SetResult();
 
         Assert.Equal("stale", await fill);
@@ -238,7 +237,7 @@ public sealed class QueryCacheStoreTests
         await QueryCacheStore.GetOrAddAsync(tagged, Minute, _ => Task.FromResult("v"), ["tests.users"], CancellationToken.None);
         await QueryCacheStore.GetOrAddAsync(other, Minute, _ => Task.FromResult("v"), ["tests.orders"], CancellationToken.None);
 
-        QueryCacheStore.InvalidateTags(["tests.users"]);
+        await QueryCacheStore.InvalidateTagsAsync(["tests.users"], CancellationToken.None);
 
         Assert.False(QueryCacheStore.TryGet<string>(tagged, out _));
         Assert.True(QueryCacheStore.TryGet<string>(other, out _));
@@ -257,7 +256,7 @@ public sealed class QueryCacheStoreTests
 
         await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("v"), Tags, CancellationToken.None);
         await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("v"), Tags, CancellationToken.None);
-        QueryCacheStore.InvalidateTags(["tests.lazy"]);
+        await QueryCacheStore.InvalidateTagsAsync(["tests.lazy"], CancellationToken.None);
 
         Assert.Equal(1, computed);
         Assert.False(QueryCacheStore.TryGet<string>(key, out _));
@@ -277,7 +276,7 @@ public sealed class QueryCacheStoreTests
         }, ["tests.during-fill"], CancellationToken.None).AsTask();
 
         await started.Task;
-        QueryCacheStore.InvalidateTags(["tests.during-fill"]);
+        await QueryCacheStore.InvalidateTagsAsync(["tests.during-fill"], CancellationToken.None);
         release.SetResult();
 
         Assert.Equal("stale", await fill);
