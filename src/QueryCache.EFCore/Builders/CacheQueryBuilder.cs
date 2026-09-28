@@ -30,7 +30,6 @@ namespace QueryCache.EFCore
         {
             _query = query.AsNoTracking();
             _isSplitQuery = false;
-            // Same SQL against another database (multi-tenant) must not share cache entries.
             var connectionString = ((IInfrastructure<IServiceProvider>)query).GetService<ICurrentDbContext>().Context.Database.GetConnectionString();
             _scope = StringComparer.Ordinal.GetHashCode(connectionString ?? string.Empty);
         }
@@ -75,25 +74,25 @@ namespace QueryCache.EFCore
         /// <returns>The updated <see cref="CacheQueryBuilder{T}"/> instance.</returns>
         public CacheQueryBuilder<T> ThenBy<TKey>(Expression<Func<T, TKey>> keySelector)
         {
-            if (_query is not IOrderedQueryable<T> orderedQuery)
+            return new(Ordered().ThenBy(keySelector), _isSplitQuery, _scope);
+        }
+        private readonly IOrderedQueryable<T> Ordered()
+        {
+            if (!typeof(IOrderedQueryable<T>).IsAssignableFrom(_query.Expression.Type))
             {
-                throw new InvalidOperationException("The query is not ordered.");
+                throw new InvalidOperationException("ThenBy/ThenByDescending must follow OrderBy or OrderByDescending.");
             }
-            return new(orderedQuery.ThenBy(keySelector), _isSplitQuery, _scope);
+            return (IOrderedQueryable<T>)_query;
         }
         /// <summary>
         /// Specifies the ordering of the elements in the query result in descending order based on the specified key.
-        /// /// </summary>
+        /// </summary>
         /// <typeparam name="TKey">The type of the key used for ordering.</typeparam>
         /// <param name="keySelector">The expression used to extract the key from each element.</param>
         /// <returns>A reference to the current instance of the <see cref="CacheQueryBuilder{T}"/> class.</returns>
         public CacheQueryBuilder<T> ThenByDescending<TKey>(Expression<Func<T, TKey>> keySelector)
         {
-            if (_query is not IOrderedQueryable<T> orderedQuery)
-            {
-                throw new InvalidOperationException("The query is not ordered.");
-            }
-            return new(orderedQuery.ThenByDescending(keySelector), _isSplitQuery, _scope);
+            return new(Ordered().ThenByDescending(keySelector), _isSplitQuery, _scope);
         }
         /// <summary>
         /// Specifies the ordering of the elements in the query result in descending order based on the specified key.
@@ -164,7 +163,7 @@ namespace QueryCache.EFCore
             {
                 IIncludableQueryable<T, TPreviousProperty> query => new(query.ThenInclude(path), _isSplitQuery, _scope),
                 IIncludableQueryable<T, IEnumerable<TPreviousProperty>> enumerableQuery => new(enumerableQuery.ThenInclude(path), _isSplitQuery, _scope),
-                _ => new(((IIncludableQueryable<T, ICollection<TPreviousProperty>>)_query).ThenInclude(path), _isSplitQuery, _scope),
+                _ => throw new InvalidOperationException($"ThenInclude must directly follow an Include or ThenInclude of a {typeof(TPreviousProperty).Name} navigation."),
             };
         }
         /// <summary>
@@ -201,18 +200,6 @@ namespace QueryCache.EFCore
         {
             return new(_query.GroupBy(keySelector), _isSplitQuery, _scope);
         }
-        /// <summary>
-        /// Projects the query results into a new form using the specified selector.
-        /// </summary>
-        /// <typeparam name="TSecond">The type of the second query.</typeparam>
-        /// <typeparam name="TResult">The type of the result.</typeparam>
-        /// <param name="second">The second query to project.</param>
-        /// <param name="resultSelector">The selector expression.</param>
-        /// <returns>A new instance of <see cref="CacheQueryBuilder{TResult}"/> with the updated query and cache key.</returns>
-        public readonly CacheQueryBuilder<TResult> Zip<TSecond, TResult>(IQueryable<TSecond> second, Expression<Func<T, TSecond, TResult>> resultSelector) where TSecond : class where TResult : class
-        {
-            return new(_query.Zip(second, resultSelector), _isSplitQuery, _scope);
-        }
         /// <summary>Concatenates another query.</summary>
         public CacheQueryBuilder<T> Concat(CacheQueryBuilder<T> query)
         {
@@ -230,20 +217,18 @@ namespace QueryCache.EFCore
             var dbCommand = _query.CreateDbCommand();
             await using (dbCommand.ConfigureAwait(false))
             {
-                if (string.Equals(operation, "FirstOrDefaultAsync", StringComparison.Ordinal))
+                return operation switch
                 {
-                    return QueryCacheStore.Remove<T>(GetHash(dbCommand));
-                }
-                if (string.Equals(operation, "ToListAsync", StringComparison.Ordinal))
-                {
-                    return QueryCacheStore.Remove<List<T>>(GetHash(dbCommand));
-                }
-                throw new InvalidOperationException($"The operation {operation} is not supported.");
+                    "FirstOrDefaultAsync" or "FirstAsync" => QueryCacheStore.Remove<T>(GetHash(dbCommand)),
+                    "ToListAsync" or "ToDictionaryAsync" => QueryCacheStore.Remove<List<T>>(GetHash(dbCommand)),
+                    "AnyAsync" => QueryCacheStore.Remove<bool>(GetHash(dbCommand)),
+                    _ => throw new InvalidOperationException($"The operation {operation} is not supported. Use ToListAsync, ToDictionaryAsync, FirstOrDefaultAsync, FirstAsync or AnyAsync."),
+                };
             }
         }
         private readonly int GetHash(DbCommand dbCommand)
         {
-            return HashCode.Combine(DbCommandComparer.Instance.GetHashCode(dbCommand), _scope);
+            return HashCode.Combine(DbCommandHasher.Hash(dbCommand), _scope);
         }
         private readonly async ValueTask<TReturn> ExecuteAsync<TReturn>(Func<IQueryable<T>, CancellationToken, Task<TReturn>> action,
                                                                         IQueryable<T> query, TimeSpan expiration,
@@ -255,15 +240,12 @@ namespace QueryCache.EFCore
             {
                 hash = GetHash(dbCommand);
             }
-            if (QueryCacheStore.TryGet<TReturn>(hash, out var cached))
-            {
-                return cached;
-            }
-            if (_isSplitQuery)
-            {
-                query = query.AsSplitQuery();
-            }
-            return await QueryCacheStore.GetOrAddAsync(hash, expiration, ct => action(query, ct), cancellationToken).ConfigureAwait(false);
+            var split = Split(query);
+            return await QueryCacheStore.GetOrAddAsync(hash, expiration, ct => action(split, ct), cancellationToken).ConfigureAwait(false);
+        }
+        private readonly IQueryable<T> Split(IQueryable<T> query)
+        {
+            return _isSplitQuery ? query.AsSplitQuery() : query;
         }
         private readonly ValueTask<TReturn> ExecuteAsync<TReturn>(Func<IQueryable<T>, CancellationToken, Task<TReturn>> action,
                                                                   IQueryable<T> query, bool cache, TimeSpan expiration,
@@ -271,7 +253,7 @@ namespace QueryCache.EFCore
         {
             if (!cache)
             {
-                return new(action(query, cancellationToken));
+                return new(action(Split(query), cancellationToken));
             }
             return ExecuteAsync(action, query, expiration, cancellationToken);
         }
@@ -297,19 +279,19 @@ namespace QueryCache.EFCore
             return ExecuteAsync((query, ct) => query.ToListAsync(ct), _query, cache, expiration, cancellationToken);
         }
         /// <summary>
-        /// Retrieves the query results as an array from the cache or executes the query and caches the results.
+        /// Retrieves the query results as a dictionary, reading the rows from the cache or executing the query and caching them.
         /// </summary>
         /// <typeparam name="TKey">The type of the key.</typeparam>
         /// <param name="keySelector">The key selector expression.</param>
         /// <param name="expiration">The expiration time for the cached results</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>A task that represents the asynchronous operation. The task result contains the dictionary of query results, or an empty dictionary if the query results are not found in the cache.</returns>
-        public readonly ValueTask<Dictionary<TKey, T>> ToDictionaryAsync<TKey>(Func<T, TKey> keySelector, TimeSpan expiration, CancellationToken cancellationToken) where TKey : notnull
+        /// <returns>A task that represents the asynchronous operation. The task result contains the dictionary of query results.</returns>
+        public readonly async ValueTask<Dictionary<TKey, T>> ToDictionaryAsync<TKey>(Func<T, TKey> keySelector, TimeSpan expiration, CancellationToken cancellationToken) where TKey : notnull
         {
-            return ExecuteAsync((query, cancellationToken) => query.ToDictionaryAsync(keySelector, cancellationToken), _query, expiration, cancellationToken);
+            return (await ToListAsync(expiration, cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector);
         }
         /// <summary>
-        /// Retrieves the query results as an array from the cache or executes the query and caches the results.
+        /// Retrieves the query results as a dictionary, reading the rows from the cache or executing the query and caching them.
         /// </summary>
         /// <typeparam name="TKey">The type of the key.</typeparam>
         /// <param name="keySelector">The key selector.</param>
@@ -317,26 +299,26 @@ namespace QueryCache.EFCore
         /// <typeparam name="TResult">The type of the values.</typeparam>
         /// <param name="expiration">The expiration time for the cached results</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>A task that represents the asynchronous operation. The task result contains the dictionary of query results, or an empty dictionary if the query results are not found in the cache.</returns>
-        public readonly ValueTask<Dictionary<TKey, TResult>> ToDictionaryAsync<TKey, TResult>(Func<T, TKey> keySelector, Func<T, TResult> resultSelector, TimeSpan expiration, CancellationToken cancellationToken) where TKey : notnull
+        /// <returns>A task that represents the asynchronous operation. The task result contains the dictionary of query results.</returns>
+        public readonly async ValueTask<Dictionary<TKey, TResult>> ToDictionaryAsync<TKey, TResult>(Func<T, TKey> keySelector, Func<T, TResult> resultSelector, TimeSpan expiration, CancellationToken cancellationToken) where TKey : notnull
         {
-            return ExecuteAsync((query, cancellationToken) => query.ToDictionaryAsync(keySelector, resultSelector, cancellationToken), _query, expiration, cancellationToken);
+            return (await ToListAsync(expiration, cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector, resultSelector);
         }
         /// <summary>
-        /// Retrieves the query results as an array from the cache or executes the query and caches the results.
+        /// Retrieves the query results as a dictionary, reading the rows from the cache or executing the query and caching them.
         /// </summary>
         /// <typeparam name="TKey">The type of the key.</typeparam>
         /// <param name="keySelector">The key selector expression.</param>
         /// <param name="equalityComparer">The equality comparer to use for comparing keys.</param>
         /// <param name="expiration">The expiration time for the cached results</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>A task that represents the asynchronous operation. The task result contains the dictionary of query results, or an empty dictionary if the query results are not found in the cache.</returns>
-        public readonly ValueTask<Dictionary<TKey, T>> ToDictionaryAsync<TKey>(Func<T, TKey> keySelector,
-                                                                               IEqualityComparer<TKey> equalityComparer,
-                                                                               TimeSpan expiration,
-                                                                               CancellationToken cancellationToken) where TKey : notnull
+        /// <returns>A task that represents the asynchronous operation. The task result contains the dictionary of query results.</returns>
+        public readonly async ValueTask<Dictionary<TKey, T>> ToDictionaryAsync<TKey>(Func<T, TKey> keySelector,
+                                                                                     IEqualityComparer<TKey> equalityComparer,
+                                                                                     TimeSpan expiration,
+                                                                                     CancellationToken cancellationToken) where TKey : notnull
         {
-            return ExecuteAsync((query, cancellationToken) => query.ToDictionaryAsync(keySelector, equalityComparer, cancellationToken), _query, expiration, cancellationToken);
+            return (await ToListAsync(expiration, cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector, equalityComparer);
         }
         /// <summary>
         /// Retrieves the first element of the query or the default value if the query is empty,
@@ -392,9 +374,10 @@ namespace QueryCache.EFCore
         /// <param name="expiration">The expiration time for the cached result.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>A <see cref="Task{T}"/> representing the asynchronous operation that returns the first element of the query.</returns>
-        public readonly ValueTask<T> FirstAsync(TimeSpan expiration, CancellationToken cancellationToken)
+        public readonly async ValueTask<T> FirstAsync(TimeSpan expiration, CancellationToken cancellationToken)
         {
-            return ExecuteAsync((query, ct) => query.FirstAsync(ct), _query, expiration, cancellationToken);
+            return await FirstOrDefaultAsync(expiration, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Sequence contains no elements.");
         }
         /// <summary>
         /// Checks if the query has any elements asynchronously.
@@ -443,10 +426,10 @@ namespace QueryCache.EFCore
             return ExecuteAsync((query, ct) => query.AnyAsync(ct), query, cache, expiration, cancellationToken);
         }
 
-#pragma warning disable HLQ006 // GetEnumerator() or GetAsyncEnumerator() should return a value type
+#pragma warning disable HLQ006 
         /// <inheritdoc/>
         public readonly IEnumerator<T> GetEnumerator()
-#pragma warning restore HLQ006 // GetEnumerator() or GetAsyncEnumerator() should return a value type
+#pragma warning restore HLQ006 
         {
             return _query.GetEnumerator();
         }

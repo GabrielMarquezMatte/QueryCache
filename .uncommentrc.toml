@@ -1,0 +1,12 @@
+[global]
+remove_todos = false
+remove_fixme = false
+remove_docs = false
+# ponytail: markers are harvested by the /ponytail-debt ledger; SAFETY: justifies Rust unsafe blocks.
+preserve_patterns = ["HACK", "WORKAROUND", "NOTE", "ponytail:", "SAFETY:"]
+use_default_ignores = true
+respect_gitignore = true
+traverse_git_repos = false
+
+[patterns."tests/**/*"]
+remove_todos = true

@@ -13,12 +13,16 @@ var users = await new CacheQueryBuilder<User>(db.Users)
     .Where(u => u.Active)
     .ToListAsync(TimeSpan.FromMinutes(5), ct);
 
-var row = await new DapperCacheQuery<int>(conn, new CommandDefinition("select id from t where x = @X", new { X = 1 }), logger)
+var row = await new DapperCacheQuery<int>(conn, new CommandDefinition("select id from t where x = @X", new { X = 1 }))
     .QueryFirstOrDefaultAsync(TimeSpan.FromMinutes(5), ct);
 ```
 
 Cache key = SQL + parameter **values** + connection string, so the same query against another database does not collide.
 Empty collections are never cached. The cache is static per process and result type (no DI, no eviction API beyond `RemoveFromCache*`).
+`Timeout.InfiniteTimeSpan` keeps an entry until it is removed or evicted; zero or negative expirations throw.
+
+Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`,
+`querycache.fill.duration` (s), tagged with `querycache.type`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
 
 ```
 dotnet build QueryCache.slnx
