@@ -46,6 +46,30 @@ public sealed class QueryCacheStoreTests
         Assert.NotEqual(Key("q", 1), Key("r", 1));
         Assert.NotEqual(Key("q", new[] { 1, 2 }, new[] { 3 }), Key("q", new[] { 1 }, new[] { 2, 3 }));
         Assert.NotEqual(Key("q", "a", "b"), Key("q", (object)new[] { "a", "b" }));
+        Assert.True(Key("q", 1).Equals((object)Key("q", 1)));
+        Assert.False(Key("q", 1).Equals("q"));
+        Assert.Equal("q", Key("q", 1).ToString());
+    }
+
+    private static IEnumerable<int> Lazy(int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            yield return i;
+        }
+    }
+
+    [Fact]
+    public async Task Lazy_enumerables_are_cached_only_when_they_have_items()
+    {
+        var empty = Key(nameof(Lazy_enumerables_are_cached_only_when_they_have_items), 0);
+        var full = Key(nameof(Lazy_enumerables_are_cached_only_when_they_have_items), 1);
+
+        await QueryCacheStore.GetOrAddAsync(empty, Minute, _ => Task.FromResult(Lazy(0)), CancellationToken.None);
+        await QueryCacheStore.GetOrAddAsync(full, Minute, _ => Task.FromResult(Lazy(2)), CancellationToken.None);
+
+        Assert.False(QueryCacheStore.TryGet<IEnumerable<int>>(empty, out _));
+        Assert.True(QueryCacheStore.TryGet<IEnumerable<int>>(full, out _));
     }
 
     [Fact]

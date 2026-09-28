@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -19,10 +20,20 @@ public sealed class HybridCacheTests : IDisposable
 
     public sealed record Row(int Id, string Name);
 
-    /// <summary>Stands in for Redis. HybridCache ignores a bare <see cref="MemoryDistributedCache"/> as a distributed layer.</summary>
+    /// <summary>
+    /// Stands in for Redis. HybridCache ignores a bare <see cref="MemoryDistributedCache"/> as a distributed layer.
+    /// Writes complete asynchronously, like a network cache, and are recorded.
+    /// </summary>
     private sealed class SharedCache : IDistributedCache
     {
         private readonly MemoryDistributedCache _inner = new(Options.Create(new MemoryDistributedCacheOptions()));
+        private int _writing;
+
+        /// <summary>Writes started and not finished yet.</summary>
+        public int Writing => Volatile.Read(ref _writing);
+
+        /// <summary>Every key written, in order.</summary>
+        public ConcurrentQueue<string> Written { get; } = new();
 
         public byte[]? Get(string key)
         {
@@ -39,9 +50,19 @@ public sealed class HybridCacheTests : IDisposable
             _inner.Set(key, value, options);
         }
 
-        public Task SetAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default)
+        public async Task SetAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default)
         {
-            return _inner.SetAsync(key, value, options, token);
+            Interlocked.Increment(ref _writing);
+            try
+            {
+                await Task.Delay(20, token);
+                await _inner.SetAsync(key, value, options, token);
+                Written.Enqueue(key);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _writing);
+            }
         }
 
         public void Refresh(string key)
@@ -65,9 +86,11 @@ public sealed class HybridCacheTests : IDisposable
         }
     }
 
+    private readonly SharedCache _distributed = new();
+
     public HybridCacheTests()
     {
-        QueryCacheStore.HybridCache = NewCache(new SharedCache());
+        QueryCacheStore.HybridCache = NewCache(_distributed);
     }
 
     public void Dispose()
@@ -141,6 +164,41 @@ public sealed class HybridCacheTests : IDisposable
         var rows = await QueryCacheStore.GetOrAddAsync<IReadOnlyList<Row>>(key, Minute, _ => throw new InvalidOperationException("not served from the cache"), CancellationToken.None);
 
         Assert.Equal([new Row(1, "a")], rows);
+    }
+
+    [Fact]
+    public async Task Tag_invalidated_during_fill_keeps_the_stale_value_out_of_the_hybrid_cache()
+    {
+        var key = Key(nameof(Tag_invalidated_during_fill_keeps_the_stale_value_out_of_the_hybrid_cache));
+        var release = new TaskCompletionSource();
+        var started = new TaskCompletionSource();
+        var fill = QueryCacheStore.GetOrAddAsync(key, Minute, async _ =>
+        {
+            started.SetResult();
+            await release.Task;
+            return "stale";
+        }, ["tests.hybrid-during-fill"], CancellationToken.None).AsTask();
+
+        await started.Task;
+        await QueryCacheStore.InvalidateTagsAsync(["tests.hybrid-during-fill"], CancellationToken.None);
+        release.SetResult();
+
+        Assert.Equal("stale", await fill);
+        Assert.DoesNotContain(_distributed.Written, written => written.StartsWith("querycache:", StringComparison.Ordinal));
+        Assert.Equal("fresh", await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("fresh"), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Synchronous_SaveChanges_waits_for_the_hybrid_invalidation()
+    {
+        await using var db = await EfCoreTests.NewDb(new EfCoreTests.Item { Id = 1 });
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+
+        db.Items.Add(new EfCoreTests.Item { Id = 2 });
+        db.SaveChanges();
+
+        Assert.Equal(0, _distributed.Writing);
+        Assert.Equal(2, (await db.Items.ToListCachedAsync(Minute, CancellationToken.None)).Count);
     }
 
     [Fact]

@@ -30,6 +30,12 @@ public sealed class EfCoreTests
     {
         public int Count;
 
+        public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            Interlocked.Increment(ref Count);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref Count);
@@ -167,6 +173,14 @@ public sealed class EfCoreTests
         Assert.NotNull(await query.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
         await query.InvalidateCacheAsync(CancellationToken.None);
         Assert.Null(await query.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task FirstCachedAsync_returns_the_first_row()
+    {
+        await using var db = await NewDb(new Item { Id = 1 });
+
+        Assert.Equal(1, (await db.Items.FirstCachedAsync(Minute, CancellationToken.None)).Id);
     }
 
     [Fact]
@@ -321,8 +335,10 @@ public sealed class EfCoreTests
         Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
     }
 
-    [Fact]
-    public async Task Commit_invalidates_what_other_connections_cached_while_the_transaction_was_open()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Commit_invalidates_what_other_connections_cached_while_the_transaction_was_open(bool sync)
     {
         var file = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
         try
@@ -331,10 +347,24 @@ public sealed class EfCoreTests
             await using var reader = await OpenDb(file);
             await using var transaction = await writer.Database.BeginTransactionAsync();
             writer.Items.Add(new Item { Id = 2 });
-            await writer.SaveChangesAsync();
+            if (sync)
+            {
+                writer.SaveChanges();
+            }
+            else
+            {
+                await writer.SaveChangesAsync();
+            }
 
             Assert.Single(await reader.Items.ToListCachedAsync(Minute, CancellationToken.None));
-            await transaction.CommitAsync();
+            if (sync)
+            {
+                transaction.Commit();
+            }
+            else
+            {
+                await transaction.CommitAsync();
+            }
 
             Assert.Equal(2, (await reader.Items.ToListCachedAsync(Minute, CancellationToken.None)).Count);
         }
@@ -343,5 +373,84 @@ public sealed class EfCoreTests
             SqliteConnection.ClearAllPools();
             File.Delete(file);
         }
+    }
+
+    [Fact]
+    public async Task Synchronous_SaveChanges_invalidates_cached_queries()
+    {
+        await using var db = await NewDb(new Item { Id = 1, Name = "a" });
+        var named = db.Items.Where(i => i.Name == "a");
+        Assert.Single(await named.ToListCachedAsync(Minute, CancellationToken.None));
+
+        db.Items.Add(new Item { Id = 2, Name = "a" });
+        db.SaveChanges();
+
+        Assert.Equal(2, (await named.ToListCachedAsync(Minute, CancellationToken.None)).Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rolled_back_saves_leave_the_cache_matching_the_database(bool sync)
+    {
+        await using var db = await NewDb(new Item { Id = 1 });
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+        var transaction = await db.Database.BeginTransactionAsync();
+        db.Items.Add(new Item { Id = 2 });
+        await db.SaveChangesAsync();
+
+        if (sync)
+        {
+            transaction.Rollback();
+        }
+        else
+        {
+            await transaction.RollbackAsync();
+        }
+        await transaction.DisposeAsync();
+
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_saves_keep_cached_entries(bool sync)
+    {
+        await using var db = await NewDb(new Item { Id = 1 });
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+        db.Items.Add(new Item { Id = 1 });
+
+        await Assert.ThrowsAsync<DbUpdateException>(async () =>
+        {
+            if (sync)
+            {
+                db.SaveChanges();
+            }
+            else
+            {
+                await db.SaveChangesAsync();
+            }
+        });
+
+        var before = db.Commands.Count;
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(before, db.Commands.Count);
+    }
+
+    [Fact]
+    public async Task ToDictionaryCachedAsync_uses_the_key_comparer()
+    {
+        await using var db = await NewDb(new Item { Id = 1, Name = "a" });
+
+        var byName = await db.Items.ToDictionaryCachedAsync(i => i.Name, StringComparer.OrdinalIgnoreCase, Minute, CancellationToken.None);
+
+        Assert.Equal(1, byName["A"].Id);
+    }
+
+    [Fact]
+    public void Expressions_without_an_entity_query_root_have_no_tags()
+    {
+        Assert.Empty(TableTags.ForQuery(System.Linq.Expressions.Expression.Constant(1), "scope"));
     }
 }

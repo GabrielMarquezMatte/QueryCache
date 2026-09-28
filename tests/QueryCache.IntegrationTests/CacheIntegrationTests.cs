@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Transactions;
 using Dapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -241,6 +242,27 @@ namespace QueryCache.IntegrationTests
 
             Assert.Single(await reader.Items.ToListCachedAsync(Minute, CancellationToken.None));
             await transaction.CommitAsync();
+
+            Assert.Equal(2, (await reader.Items.ToListCachedAsync(Minute, CancellationToken.None)).Count);
+        }
+
+        [Fact]
+        public async Task Completing_a_TransactionScope_invalidates_what_other_connections_cached_meanwhile()
+        {
+            var connectionString = await NewDatabaseAsync(new Item { Id = 1 });
+            await using var writer = NewDb(connectionString);
+            await using var reader = NewDb(connectionString);
+
+            using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+            {
+                writer.Items.Add(new Item { Id = 2 });
+                await writer.SaveChangesAsync();
+                using (new TransactionScope(TransactionScopeOption.Suppress, TransactionScopeAsyncFlowOption.Enabled))
+                {
+                    Assert.Single(await reader.Items.ToListCachedAsync(Minute, CancellationToken.None));
+                }
+                scope.Complete();
+            }
 
             Assert.Equal(2, (await reader.Items.ToListCachedAsync(Minute, CancellationToken.None)).Count);
         }

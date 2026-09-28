@@ -72,6 +72,35 @@ public sealed class DapperTests
     }
 
     [Fact]
+    public void DynamicParameters_added_by_name_are_keyed_by_value()
+    {
+        static DynamicParameters Params(int id)
+        {
+            var parameters = new DynamicParameters();
+            parameters.Add("Id", id);
+            return parameters;
+        }
+
+        Assert.Equal(Key(Params(1)), Key(Params(1)));
+        Assert.NotEqual(Key(Params(1)), Key(Params(2)));
+    }
+
+    [Fact]
+    public async Task Queries_are_equal_by_connection_sql_and_parameter_values()
+    {
+        await using var connection = await NewConnection("create table t(id int);");
+        await using var other = await NewConnection("create table t(id int);");
+        var query = Query(connection, new CommandDefinition("select id from t where id = @Id", new { Id = 1 }));
+
+        Assert.Equal(query, (object)Query(connection, new CommandDefinition("select id from t where id = @Id", new { Id = 1 })));
+        Assert.Equal(query.GetHashCode(), Query(connection, new CommandDefinition("select id from t where id = @Id", new { Id = 1 })).GetHashCode());
+        Assert.True(query != Query(connection, new CommandDefinition("select id from t where id = @Id", new { Id = 2 })));
+        Assert.True(query != Query(other, new CommandDefinition("select id from t where id = @Id", new { Id = 1 })));
+        Assert.False(query.Equals((object?)null));
+        Assert.Contains("select id from t where id = @Id", query.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Dictionary_parameters_are_keyed_by_value()
     {
         static Dictionary<string, object?> Params(int id) => new(StringComparer.Ordinal) { ["Id"] = id };
