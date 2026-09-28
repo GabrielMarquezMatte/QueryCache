@@ -21,14 +21,14 @@
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
     <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.11.2" />
     <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.4.1" />
-    <PackageReference Include="Testcontainers.Redis" Version="4.12.0" />
+    <PackageReference Include="Testcontainers.Redis" Version="4.15.0" />
     <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.1" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Testcontainers.PostgreSql" Version="4.12.0" />
-    <PackageReference Include="Testcontainers.MsSql" Version="4.12.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
+    <PackageReference Include="Testcontainers.MsSql" Version="4.15.0" />
     <!-- Testcontainers 4.12 pulls SSH.NET 2025.1.0 (GHSA-mggc-4xg6-vcxf, GHSA-q939-rpr3-3284). -->
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2" />
