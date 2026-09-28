@@ -31,18 +31,6 @@ namespace QueryCache.Dapper
         }
 
         /// <summary>
-        /// Executes the query, optionally using cache.
-        /// </summary>
-        public ValueTask<IEnumerable<T>> QueryAsync(bool cache, TimeSpan expiration, CancellationToken cancellationToken)
-        {
-            if (!cache)
-            {
-                return new(connection.QueryAsync<T>(WithToken(command.Flags, cancellationToken)));
-            }
-            return QueryAsync(expiration, cancellationToken);
-        }
-
-        /// <summary>
         /// Executes the query and returns the first result from cache, or fetches from the database and caches it.
         /// Returns <see langword="null"/> (or <see langword="default"/> for value types) when no rows match.
         /// </summary>
@@ -51,17 +39,6 @@ namespace QueryCache.Dapper
             return ExecuteAsync(static (conn, cmd) => conn.QueryFirstOrDefaultAsync<T>(cmd), command.Flags, expiration, cancellationToken);
         }
 
-        /// <summary>
-        /// Executes the query, optionally using cache, and returns the first result or default.
-        /// </summary>
-        public ValueTask<T?> QueryFirstOrDefaultAsync(bool cache, TimeSpan expiration, CancellationToken cancellationToken)
-        {
-            if (!cache)
-            {
-                return new(connection.QueryFirstOrDefaultAsync<T>(WithToken(command.Flags, cancellationToken)));
-            }
-            return QueryFirstOrDefaultAsync(expiration, cancellationToken);
-        }
         /// <summary>
         /// Executes the query and returns a single value from cache, or fetches from the database and caches it. Returns <see langword="null"/> (or <see langword="default"/> for value types) when no rows match.
         /// </summary>
@@ -73,39 +50,13 @@ namespace QueryCache.Dapper
             return ExecuteAsync(static (conn, cmd) => conn.ExecuteScalarAsync<T?>(cmd), command.Flags, expiration, cancellationToken);
         }
 
-        /// <summary>
-        /// Executes the query, optionally using cache, and returns a single value. Returns <see langword="null"/> (or <see langword="default"/> for value types) when no rows match.
-        /// </summary>
-        /// <param name="cache">Whether to use cache or not. If <see langword="false"/>, the query will be executed against the database without caching the result.</param>
-        /// <param name="expiration">The duration for which the result should be cached if caching is enabled. Ignored if <paramref name="cache"/> is <see langword="false"/>.</param>
-        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
-        /// <returns>A task that represents the asynchronous operation. The task result contains the value returned by the query, or <see langword="null"/> (or <see langword="default"/> for value types) if no rows match.</returns>
-        public ValueTask<T?> ExecuteScalarAsync(bool cache, TimeSpan expiration, CancellationToken cancellationToken)
+        /// <summary>Removes every cached result of this command (<see cref="QueryAsync(TimeSpan, CancellationToken)"/>,
+        /// <see cref="QueryFirstOrDefaultAsync(TimeSpan, CancellationToken)"/> and <see cref="ExecuteScalarAsync(TimeSpan, CancellationToken)"/>).</summary>
+        /// <returns><see langword="true"/> if anything was removed.</returns>
+        public bool InvalidateCache()
         {
-            if (!cache)
-            {
-                return new(connection.ExecuteScalarAsync<T?>(WithToken(command.Flags, cancellationToken)));
-            }
-            return ExecuteScalarAsync(expiration, cancellationToken);
-        }
-
-        /// <summary>
-        /// Removes the cached result for the given operation.
-        /// </summary>
-        /// <param name="operation">
-        /// The operation whose cache entry should be invalidated.
-        /// Use <c>nameof(QueryAsync)</c>, <c>nameof(QueryFirstOrDefaultAsync)</c> or <c>nameof(ExecuteScalarAsync)</c>
-        /// (the last two share one entry).
-        /// </param>
-        /// <returns><see langword="true"/> if the entry was found and removed; otherwise, <see langword="false"/>.</returns>
-        public bool RemoveFromCache(string operation)
-        {
-            return operation switch
-            {
-                nameof(QueryAsync) => QueryCacheStore.Remove<IEnumerable<T>>(GetHashCode()),
-                nameof(QueryFirstOrDefaultAsync) or nameof(ExecuteScalarAsync) => QueryCacheStore.Remove<T>(GetHashCode()),
-                _ => throw new InvalidOperationException($"The operation '{operation}' is not supported. Use nameof({nameof(QueryAsync)}), nameof({nameof(QueryFirstOrDefaultAsync)}) or nameof({nameof(ExecuteScalarAsync)})."),
-            };
+            var key = GetHashCode();
+            return QueryCacheStore.Remove<IEnumerable<T>>(key) | QueryCacheStore.Remove<T>(key);
         }
         /// <inheritdoc/>
         public bool Equals(DapperCacheQuery<T>? other)

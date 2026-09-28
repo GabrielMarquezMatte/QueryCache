@@ -62,31 +62,30 @@ public sealed class EfCoreTests
     }
 
     [Fact]
-    public async Task Second_call_is_served_from_cache_until_removed()
+    public async Task Second_call_is_served_from_cache_until_invalidated()
     {
         await using var db = await NewDb(new Item { Id = 1, Name = "a" });
-        var builder = new CacheQueryBuilder<Item>(db.Items).Where(i => i.Id == 1);
+        var query = db.Items.Where(i => i.Id == 1);
 
-        var first = await builder.ToListAsync(Minute, CancellationToken.None);
+        var first = await query.ToListCachedAsync(Minute, CancellationToken.None);
         await db.Items.ExecuteDeleteAsync();
-        var second = await builder.ToListAsync(Minute, CancellationToken.None);
+        var second = await query.ToListCachedAsync(Minute, CancellationToken.None);
 
         Assert.Single(first);
         Assert.Single(second);
-        Assert.True(await builder.RemoveFromCacheAsync("ToListAsync", CancellationToken.None));
-        Assert.Empty(await builder.ToListAsync(Minute, CancellationToken.None));
+        Assert.True(query.InvalidateCache());
+        Assert.Empty(await query.ToListCachedAsync(Minute, CancellationToken.None));
+        Assert.False(query.InvalidateCache());
     }
 
     [Fact]
-    public async Task ToCacheQueryBuilder_extension_builds_a_cached_query()
+    public async Task Cached_entities_are_not_tracked()
     {
-        await using var db = await NewDb(new Item { Id = 1 }, new Item { Id = 2 });
-        var builder = db.Items.ToCacheQueryBuilder().Where(i => i.Id == 2);
+        await using var db = await NewDb(new Item { Id = 1 });
 
-        await builder.ToListAsync(Minute, CancellationToken.None);
-        await db.Items.ExecuteDeleteAsync();
+        await db.Items.ToListCachedAsync(Minute, CancellationToken.None);
 
-        Assert.Equal(2, Assert.Single(await builder.ToListAsync(Minute, CancellationToken.None)).Id);
+        Assert.Empty(db.ChangeTracker.Entries());
     }
 
     [Fact]
@@ -95,119 +94,104 @@ public sealed class EfCoreTests
         await using var db1 = await NewDb(new Item { Id = 1, Name = "db1" });
         await using var db2 = await NewDb(new Item { Id = 1, Name = "db2" });
 
-        var first = await new CacheQueryBuilder<Item>(db1.Items).ToListAsync(Minute, CancellationToken.None);
-        var second = await new CacheQueryBuilder<Item>(db2.Items).ToListAsync(Minute, CancellationToken.None);
+        var first = await db1.Items.ToListCachedAsync(Minute, CancellationToken.None);
+        var second = await db2.Items.ToListCachedAsync(Minute, CancellationToken.None);
 
         Assert.Equal("db1", Assert.Single(first).Name);
         Assert.Equal("db2", Assert.Single(second).Name);
     }
 
     [Fact]
-    public async Task Cache_false_always_hits_the_database()
-    {
-        await using var db = await NewDb(new Item { Id = 1 });
-        var builder = new CacheQueryBuilder<Item>(db.Items);
-
-        await builder.ToListAsync(Minute, CancellationToken.None);
-        await db.Items.ExecuteDeleteAsync();
-
-        Assert.Empty(await builder.ToListAsync(cache: false, Minute, CancellationToken.None));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task AsSplitQuery_is_applied_with_and_without_cache(bool cache)
+    public async Task Native_Include_and_AsSplitQuery_are_honored()
     {
         await using var db = await NewDb(new Item { Id = 1, Tags = { new Tag { Id = 1 } } });
         db.Commands.Count = 0;
 
-        var items = await new CacheQueryBuilder<Item>(db.Items).Include(i => i.Tags).AsSplitQuery().ToListAsync(cache, Minute, CancellationToken.None);
+        var items = await db.Items.Include(i => i.Tags).AsSplitQuery().ToListCachedAsync(Minute, CancellationToken.None);
 
         Assert.Single(Assert.Single(items).Tags);
         Assert.Equal(2, db.Commands.Count);
     }
 
     [Fact]
-    public async Task ToDictionaryAsync_with_different_key_selectors_uses_each_selector()
+    public async Task Value_type_projections_are_cached()
+    {
+        await using var db = await NewDb(new Item { Id = 1, Code = 7 });
+        var query = db.Items.Select(i => i.Code);
+
+        await query.ToListCachedAsync(Minute, CancellationToken.None);
+        await db.Items.ExecuteDeleteAsync();
+
+        Assert.Equal([7], await query.ToListCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ToDictionaryCachedAsync_with_different_key_selectors_uses_each_selector()
     {
         await using var db = await NewDb(new Item { Id = 1, Code = 100 });
-        var builder = new CacheQueryBuilder<Item>(db.Items);
 
-        var byId = await builder.ToDictionaryAsync(i => i.Id, Minute, CancellationToken.None);
-        var byCode = await builder.ToDictionaryAsync(i => i.Code, Minute, CancellationToken.None);
-        var names = await builder.ToDictionaryAsync(i => i.Code, i => i.Id * 2, Minute, CancellationToken.None);
+        var byId = await db.Items.ToDictionaryCachedAsync(i => i.Id, Minute, CancellationToken.None);
+        var byCode = await db.Items.ToDictionaryCachedAsync(i => i.Code, Minute, CancellationToken.None);
+        var doubled = await db.Items.ToDictionaryCachedAsync(i => i.Code, i => i.Id * 2, Minute, CancellationToken.None);
 
         Assert.Equal([1], byId.Keys);
         Assert.Equal([100], byCode.Keys);
-        Assert.Equal(2, names[100]);
+        Assert.Equal(2, doubled[100]);
     }
 
     [Fact]
-    public async Task FirstOrDefaultAsync_is_served_from_cache_until_removed()
+    public async Task FirstOrDefaultCachedAsync_is_served_from_cache_until_invalidated()
     {
         await using var db = await NewDb(new Item { Id = 1, Name = "a" });
-        var builder = new CacheQueryBuilder<Item>(db.Items).Where(i => i.Id == 1);
+        var query = db.Items.Where(i => i.Id == 1);
 
-        await builder.FirstOrDefaultAsync(Minute, CancellationToken.None);
+        await query.FirstOrDefaultCachedAsync(Minute, CancellationToken.None);
         await db.Items.ExecuteDeleteAsync();
 
-        Assert.NotNull(await builder.FirstOrDefaultAsync(Minute, CancellationToken.None));
-        Assert.True(await builder.RemoveFromCacheAsync("FirstOrDefaultAsync", CancellationToken.None));
-        Assert.Null(await builder.FirstOrDefaultAsync(Minute, CancellationToken.None));
+        Assert.NotNull(await query.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
+        Assert.True(query.InvalidateCache());
+        Assert.Null(await query.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
     }
 
     [Fact]
-    public async Task FirstAsync_throws_on_empty_even_after_FirstOrDefaultAsync_cached_null()
+    public async Task FirstCachedAsync_throws_on_empty()
     {
         await using var db = await NewDb();
-        var builder = new CacheQueryBuilder<Item>(db.Items);
 
-        Assert.Null(await builder.FirstOrDefaultAsync(Minute, CancellationToken.None));
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await builder.FirstAsync(Minute, CancellationToken.None));
+        Assert.Null(await db.Items.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await db.Items.FirstCachedAsync(Minute, CancellationToken.None));
     }
 
     [Fact]
-    public async Task AnyAsync_is_served_from_cache_until_removed()
+    public async Task Results_without_rows_are_not_cached()
     {
-        await using var db = await NewDb(new Item { Id = 1 });
-        var builder = new CacheQueryBuilder<Item>(db.Items);
+        await using var db = await NewDb();
 
-        Assert.True(await builder.AnyAsync(Minute, CancellationToken.None));
+        Assert.Null(await db.Items.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
+        Assert.False(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(0, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
+        db.Items.Add(new Item { Id = 1 });
+        await db.SaveChangesAsync();
+
+        Assert.NotNull(await db.Items.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
+        Assert.True(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(1, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AnyCachedAsync_and_CountCachedAsync_are_served_from_cache_until_invalidated()
+    {
+        await using var db = await NewDb(new Item { Id = 1 }, new Item { Id = 2 });
+
+        Assert.True(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(2, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
         await db.Items.ExecuteDeleteAsync();
 
-        Assert.True(await builder.AnyAsync(Minute, CancellationToken.None));
-        Assert.False(await builder.AnyAsync(cache: false, Minute, CancellationToken.None));
-        Assert.True(await builder.RemoveFromCacheAsync("AnyAsync", CancellationToken.None));
-        Assert.False(await builder.AnyAsync(Minute, CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task RemoveFromCacheAsync_rejects_unknown_operation()
-    {
-        await using var db = await NewDb();
-
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await new CacheQueryBuilder<Item>(db.Items).RemoveFromCacheAsync("CountAsync", CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task ThenBy_requires_a_preceding_OrderBy()
-    {
-        await using var db = await NewDb(new Item { Id = 1, Code = 2 }, new Item { Id = 2, Code = 1 });
-        var builder = new CacheQueryBuilder<Item>(db.Items);
-
-        Assert.Throws<InvalidOperationException>(() => builder.ThenBy(i => i.Id));
-        Assert.Throws<InvalidOperationException>(() => builder.ThenByDescending(i => i.Id));
-        var ordered = await builder.OrderBy(i => i.Name).ThenBy(i => i.Code).ToListAsync(Minute, CancellationToken.None);
-        Assert.Equal([2, 1], ordered.Select(i => i.Id));
-    }
-
-    [Fact]
-    public async Task ThenInclude_requires_a_preceding_Include()
-    {
-        await using var db = await NewDb();
-
-        Assert.Throws<InvalidOperationException>(() => new CacheQueryBuilder<Item>(db.Items).Include(i => i.Tags).Where(i => i.Id > 0).ThenInclude<Tag, Item>(t => t.Item));
+        Assert.True(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(2, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
+        Assert.True(db.Items.InvalidateCache());
+        Assert.False(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
+        Assert.Equal(0, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
     }
 
     [Fact]

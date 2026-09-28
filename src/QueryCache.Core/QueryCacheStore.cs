@@ -8,7 +8,8 @@ namespace QueryCache;
 
 /// <summary>
 /// Process-wide cache of query results, keyed by a caller-computed hash. One LRU per result type.
-/// Concurrent misses for the same key run the factory once (single-flight). Empty collections are not kept.
+/// Concurrent misses for the same key run the factory once (single-flight).
+/// Results meaning "no rows" are returned but not kept: <see langword="default"/> values (<see langword="null"/>, 0, <see langword="false"/>) and empty collections.
 /// </summary>
 /// <remarks>
 /// Publishes metrics on the <see cref="MeterName"/> meter: <c>querycache.hits</c>, <c>querycache.misses</c> and
@@ -103,7 +104,7 @@ public static class QueryCacheStore
             var start = Stopwatch.GetTimestamp();
             var value = await factory(cancellationToken).ConfigureAwait(false);
             FillDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, CacheHolder<T>.TypeTag);
-            if (!IsEmptyEnumerable(value))
+            if (!IsEmpty(value))
             {
                 CacheHolder<T>.Cache.AddOrUpdate(key, (value, expiration));
                 if (gate.Invalidated)
@@ -120,8 +121,12 @@ public static class QueryCacheStore
         }
     }
 
-    private static bool IsEmptyEnumerable<T>(T value)
+    private static bool IsEmpty<T>(T value)
     {
+        if (EqualityComparer<T>.Default.Equals(value, default))
+        {
+            return true;
+        }
         if (value is string || value is not IEnumerable enumerable)
         {
             return false;

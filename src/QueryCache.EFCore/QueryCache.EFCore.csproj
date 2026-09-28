@@ -9,7 +9,7 @@
     <PackageId>QueryCache.EFCore</PackageId>
     <Version>1.0.0</Version>
     <Authors>Gabriel Matte</Authors>
-    <Description>Cache Entity Framework Core query results in-process with a fluent, IQueryable-compatible builder.</Description>
+    <Description>Cache Entity Framework Core query results in-process with IQueryable extensions (ToListCachedAsync, FirstOrDefaultCachedAsync, ...).</Description>
     <PackageTags>cache;query;efcore;entity-framework</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -62,6 +62,19 @@ public sealed class QueryCacheStoreTests
     }
 
     [Fact]
+    public async Task Default_values_are_not_cached()
+    {
+        var key = HashCode.Combine(nameof(Default_values_are_not_cached));
+        await QueryCacheStore.GetOrAddAsync(key, TimeSpan.FromMinutes(1), _ => Task.FromResult<string?>(null), CancellationToken.None);
+        await QueryCacheStore.GetOrAddAsync(key, TimeSpan.FromMinutes(1), _ => Task.FromResult(0), CancellationToken.None);
+        await QueryCacheStore.GetOrAddAsync(key, TimeSpan.FromMinutes(1), _ => Task.FromResult(false), CancellationToken.None);
+
+        Assert.False(QueryCacheStore.TryGet<string?>(key, out _));
+        Assert.False(QueryCacheStore.TryGet<int>(key, out _));
+        Assert.False(QueryCacheStore.TryGet<bool>(key, out _));
+    }
+
+    [Fact]
     public async Task Empty_strings_are_cached()
     {
         var key = HashCode.Combine(nameof(Empty_strings_are_cached));

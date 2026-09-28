@@ -119,22 +119,39 @@ public sealed class DapperTests
         await connection.ExecuteAsync("delete from t");
 
         Assert.Equal(5, await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
-        Assert.True(query.RemoveFromCache(nameof(query.QueryFirstOrDefaultAsync)));
+        Assert.True(query.InvalidateCache());
         Assert.Equal(0, await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
     }
 
     [Fact]
-    public async Task Cache_false_always_hits_the_database()
+    public async Task InvalidateCache_removes_list_and_single_value_entries()
     {
-        await using var connection = await NewConnection("create table t(id int); insert into t values (1);");
+        await using var connection = await NewConnection("create table t(id int); insert into t values (4);");
         var query = Query(connection, new CommandDefinition("select id from t"));
 
         await query.QueryAsync(Minute, CancellationToken.None);
+        await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None);
         await connection.ExecuteAsync("delete from t");
 
-        Assert.Empty(await query.QueryAsync(cache: false, Minute, CancellationToken.None));
-        Assert.True(query.RemoveFromCache(nameof(query.QueryAsync)));
-        Assert.Throws<InvalidOperationException>(() => query.RemoveFromCache("Other"));
+        Assert.True(query.InvalidateCache());
+        Assert.False(query.InvalidateCache());
+        Assert.Empty(await query.QueryAsync(Minute, CancellationToken.None));
+        Assert.Equal(0, await query.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Results_without_rows_are_not_cached()
+    {
+        await using var connection = await NewConnection("create table t(id int);");
+        var first = Query(connection, new CommandDefinition("select id from t"));
+        var scalar = Query(connection, new CommandDefinition("select max(id) from t"));
+
+        Assert.Equal(0, await first.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
+        Assert.Equal(0, await scalar.ExecuteScalarAsync(Minute, CancellationToken.None));
+        await connection.ExecuteAsync("insert into t values (6)");
+
+        Assert.Equal(6, await first.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
+        Assert.Equal(6, await scalar.ExecuteScalarAsync(Minute, CancellationToken.None));
     }
 
     [Fact]
@@ -147,21 +164,8 @@ public sealed class DapperTests
         await connection.ExecuteAsync("delete from t");
 
         Assert.Equal(9, await query.ExecuteScalarAsync(Minute, CancellationToken.None));
-        Assert.True(query.RemoveFromCache(nameof(query.ExecuteScalarAsync)));
+        Assert.True(query.InvalidateCache());
         Assert.Equal(0, await query.ExecuteScalarAsync(Minute, CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task Caller_cancellation_token_reaches_the_database_without_cache()
-    {
-        await using var connection = await NewConnection("create table t(id int);");
-        var query = Query(connection, new CommandDefinition("select id from t"));
-        using var cts = new CancellationTokenSource();
-        await cts.CancelAsync();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await query.QueryAsync(cache: false, Minute, cts.Token));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await query.QueryFirstOrDefaultAsync(cache: false, Minute, cts.Token));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await query.ExecuteScalarAsync(cache: false, Minute, cts.Token));
     }
 
     [Fact]

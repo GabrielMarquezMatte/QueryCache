@@ -9,6 +9,7 @@ namespace QueryCache.EFCore.Comparers
         {
             HashCode hash = new();
             hash.Add(command.CommandText, StringComparer.Ordinal);
+            hash.Add(command.Connection?.ConnectionString, StringComparer.Ordinal);
             foreach (DbParameter parameter in command.Parameters)
             {
                 hash.Add(parameter.ParameterName, StringComparer.Ordinal);
