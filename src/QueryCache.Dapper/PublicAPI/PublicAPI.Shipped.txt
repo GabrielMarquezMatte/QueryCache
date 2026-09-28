@@ -1,1 +1,15 @@
 #nullable enable
+QueryCache.Dapper.DapperCacheQuery<T>
+QueryCache.Dapper.DapperCacheQuery<T>.DapperCacheQuery(System.Data.Common.DbConnection! connection, Dapper.CommandDefinition command) -> void
+QueryCache.Dapper.DapperCacheQuery<T>.Equals(QueryCache.Dapper.DapperCacheQuery<T>? other) -> bool
+QueryCache.Dapper.DapperCacheQuery<T>.ExecuteScalarAsync(System.TimeSpan expiration, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<T?>
+QueryCache.Dapper.DapperCacheQuery<T>.InvalidateCacheAsync(System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask
+QueryCache.Dapper.DapperCacheQuery<T>.QueryAsync(System.TimeSpan expiration, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyList<T>!>
+QueryCache.Dapper.DapperCacheQuery<T>.QueryFirstOrDefaultAsync(System.TimeSpan expiration, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.ValueTask<T?>
+QueryCache.Dapper.DapperCacheQueryExtensions
+override QueryCache.Dapper.DapperCacheQuery<T>.Equals(object? obj) -> bool
+override QueryCache.Dapper.DapperCacheQuery<T>.GetHashCode() -> int
+override QueryCache.Dapper.DapperCacheQuery<T>.ToString() -> string!
+static QueryCache.Dapper.DapperCacheQuery<T>.operator !=(QueryCache.Dapper.DapperCacheQuery<T>? left, QueryCache.Dapper.DapperCacheQuery<T>? right) -> bool
+static QueryCache.Dapper.DapperCacheQuery<T>.operator ==(QueryCache.Dapper.DapperCacheQuery<T>? left, QueryCache.Dapper.DapperCacheQuery<T>? right) -> bool
+static QueryCache.Dapper.DapperCacheQueryExtensions.ToCacheQuery<T>(this System.Data.Common.DbConnection! connection, Dapper.CommandDefinition command) -> QueryCache.Dapper.DapperCacheQuery<T>!
