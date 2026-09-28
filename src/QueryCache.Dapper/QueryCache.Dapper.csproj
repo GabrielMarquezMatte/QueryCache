@@ -34,7 +34,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\QueryCache.Core\QueryCache.Core.csproj" />
-    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="Dapper" Version="2.1.89" />
   </ItemGroup>
 
   <ItemGroup>
