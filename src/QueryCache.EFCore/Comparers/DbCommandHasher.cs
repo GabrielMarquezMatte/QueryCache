@@ -12,7 +12,6 @@ namespace QueryCache.EFCore.Comparers
             foreach (DbParameter parameter in command.Parameters)
             {
                 hash.Add(parameter.ParameterName, StringComparer.Ordinal);
-                // Arrays (byte[], Npgsql array parameters) would otherwise hash by reference and never hit.
                 if (parameter.Value is IEnumerable items and not string)
                 {
                     foreach (var item in items)

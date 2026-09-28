@@ -24,13 +24,11 @@ public static class QueryCacheStore
     private static readonly Counter<long> Misses = Meter.CreateCounter<long>("querycache.misses", description: "Lookups that ran the query.");
     private static readonly Histogram<double> FillDuration = Meter.CreateHistogram<double>("querycache.fill.duration", "s", "Time spent running the query on a miss.");
 
-    // BitFaster stores expiry in Stopwatch ticks (nanoseconds on Linux); TimeSpan.MaxValue would overflow.
     private static readonly TimeSpan MaxExpiration = TimeSpan.FromDays(36500);
 
     // ponytail: locks are dropped once the winner finishes; a late caller may re-run the factory. Fine for cache fills.
     private static readonly ConcurrentDictionary<int, Gate> Locks = new();
 
-    // A gate exists only while a fill for its key runs, so Remove can flag that fill as stale.
     private sealed class Gate() : SemaphoreSlim(1, 1)
     {
         public volatile bool Invalidated;
@@ -92,7 +90,6 @@ public static class QueryCacheStore
             if (!IsEmptyEnumerable(value))
             {
                 CacheHolder<T>.Cache.AddOrUpdate(key, (value, expiration));
-                // Checked after the add: a Remove that raced the add either removed it already or set the flag first.
                 if (gate.Invalidated)
                 {
                     CacheHolder<T>.Cache.TryRemove(key);
