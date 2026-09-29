@@ -3,6 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Medallion.Threading;
+using Medallion.Threading.Redis;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
@@ -50,11 +52,38 @@ public abstract class RedisTests<TSelf>(PostgresServer postgres, RedisServer red
     public async ValueTask DisposeAsync()
     {
         QueryCacheStore.HybridCache = null;
+        QueryCacheStore.DistributedLock = null;
         foreach (var instance in _instances)
         {
             await instance.DisposeAsync();
         }
         GC.SuppressFinalize(this);
+    }
+
+    [Fact]
+    public async Task A_miss_waits_for_the_instance_holding_the_redis_lock_and_reuses_its_result()
+    {
+        await using var multiplexer = await ConnectionMultiplexer.ConnectAsync(Redis);
+        var locks = new RedisDistributedSynchronizationProvider(multiplexer.GetDatabase());
+        QueryCacheStore.DistributedLock = locks;
+        QueryCacheStore.HybridCache = NewInstance();
+        var otherInstance = NewInstance();
+        var key = new QueryKey(nameof(A_miss_waits_for_the_instance_holding_the_redis_lock_and_reuses_its_result), Guid.NewGuid());
+        var calls = 0;
+        var held = await locks.AcquireLockAsync(QueryCacheStore.LockName<string>(key));
+
+        var miss = QueryCacheStore.GetOrAddAsync(key, Minute, _ =>
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult("mine");
+        }, CancellationToken.None).AsTask();
+        await Task.Delay(500);
+        Assert.False(miss.IsCompleted);
+        await otherInstance.SetAsync(QueryCacheStore.HybridKey<string>(key), "theirs");
+        await held.DisposeAsync();
+
+        Assert.Equal("theirs", await miss);
+        Assert.Equal(0, calls);
     }
 
     protected TestDb NewDb(string connectionString, CommandCounter? counter = null)

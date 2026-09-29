@@ -68,7 +68,19 @@ Keys and tags are SHA-256 digests (no SQL or connection string in Redis). Tested
 So with Microsoft's `HybridCache`, only rely on `SaveChanges` invalidation within one instance, or keep expirations short. Other trade-offs:
 
 - A hit deserializes, so it costs more than the in-process hit and grows with the row count; callers get their own copies.
-- Single-flight is per process.
+- Single-flight is per process unless you add a distributed lock (below).
+
+#### Distributed lock
+
+Without a lock, instances that miss the same entry at the same time each run the query. With one, the instance that misses takes a lock named after the entry, reads the cache again in case another instance filled it meanwhile, and only then runs the query:
+
+```csharp
+// DistributedLock.Redis package
+QueryCacheStore.DistributedLock = new RedisDistributedSynchronizationProvider(redisConnection.GetDatabase());
+QueryCacheStore.DistributedLockTimeout = TimeSpan.FromSeconds(10);   // default; set it above your slowest cached query
+```
+
+Any `IDistributedLockProvider` from [DistributedLock](https://github.com/madelson/DistributedLock) works (PostgreSQL, SQL Server, Azure blobs...). The lock only applies with a `HybridCache`, and it never fails a query: a lock that times out or errors lets the query run unlocked and counts it on `querycache.lock.failures`. A miss costs one more cache read and a lock round trip. Results with no rows are never stored, so instances waiting on one run the query in turn.
 
 #### Navigation properties
 
@@ -116,10 +128,10 @@ A hit costs the same whatever the row count. A miss adds ~32 μs for EF Core and
 - **`SaveChanges`** (with `UseQueryCacheInvalidation()`): drops entries that read the written tables, and again on commit. `ExecuteUpdate`, `ExecuteDelete`, raw SQL and Dapper writes are not seen; call `InvalidateCacheAsync(ct)` for those.
 - `SumCachedAsync` / `MaxCachedAsync` work on a projection: `query.Select(x => x.Price).SumCachedAsync(...)`. Each operator has its own entry, so `First` never answers `Single`.
 - **No rows** (empty collections, `null`, `0`, `false`): returned, never cached.
-- **Single-flight**: concurrent misses run the query once and share its result or its exception.
+- **Single-flight**: concurrent misses in a process run the query once and share its result or its exception; across instances with `QueryCacheStore.DistributedLock`.
 - `QueryCacheStore.Capacity` sets the in-process entries kept per result type (default 128); set it at startup. `Timeout.InfiniteTimeSpan` keeps an entry until removed or evicted; zero or negative expirations throw.
 - To skip the cache, call EF/Dapper directly.
-- Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`, `querycache.fill.duration` (s), `querycache.store.failures`, tagged with `querycache.type`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
+- Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`, `querycache.fill.duration` (s), `querycache.store.failures`, `querycache.lock.failures`, tagged with `querycache.type`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
 
 ## Build
 

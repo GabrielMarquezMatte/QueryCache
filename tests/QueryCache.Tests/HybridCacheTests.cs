@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
+using Medallion.Threading;
+using Medallion.Threading.FileSystem;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Hybrid;
@@ -96,6 +99,91 @@ public sealed class HybridCacheTests : IDisposable
     public void Dispose()
     {
         QueryCacheStore.HybridCache = null;
+        QueryCacheStore.DistributedLock = null;
+        QueryCacheStore.DistributedLockTimeout = TimeSpan.FromSeconds(10);
+    }
+
+    private static FileDistributedSynchronizationProvider NewLocks()
+    {
+        return new FileDistributedSynchronizationProvider(Directory.CreateTempSubdirectory("querycache-locks"));
+    }
+
+    private static Func<CancellationToken, Task<string>> Counting(StrongBox<int> calls)
+    {
+        return _ =>
+        {
+            Interlocked.Increment(ref calls.Value);
+            return Task.FromResult("mine");
+        };
+    }
+
+    [Fact]
+    public async Task A_miss_waits_for_the_instance_holding_the_lock_and_reuses_its_result()
+    {
+        var locks = NewLocks();
+        QueryCacheStore.DistributedLock = locks;
+        var key = Key(nameof(A_miss_waits_for_the_instance_holding_the_lock_and_reuses_its_result));
+        var calls = new StrongBox<int>();
+        var otherInstance = await locks.AcquireLockAsync(QueryCacheStore.LockName<string>(key));
+
+        var miss = QueryCacheStore.GetOrAddAsync(key, Minute, Counting(calls), CancellationToken.None).AsTask();
+        await Task.Delay(300);
+        Assert.False(miss.IsCompleted);
+        await QueryCacheStore.HybridCache!.SetAsync(QueryCacheStore.HybridKey<string>(key), "theirs");
+        await otherInstance.DisposeAsync();
+
+        Assert.Equal("theirs", await miss);
+        Assert.Equal(0, calls.Value);
+        await using var released = await locks.TryAcquireLockAsync(QueryCacheStore.LockName<string>(key));
+        Assert.NotNull(released);
+    }
+
+    [Fact]
+    public async Task An_uncontended_miss_runs_the_query_and_releases_the_lock()
+    {
+        var locks = NewLocks();
+        QueryCacheStore.DistributedLock = locks;
+        var key = Key(nameof(An_uncontended_miss_runs_the_query_and_releases_the_lock));
+        var calls = new StrongBox<int>();
+
+        Assert.Equal("mine", await QueryCacheStore.GetOrAddAsync(key, Minute, Counting(calls), CancellationToken.None));
+        Assert.Equal("mine", await QueryCacheStore.GetOrAddAsync(key, Minute, Counting(calls), CancellationToken.None));
+
+        Assert.Equal(1, calls.Value);
+        await using var released = await locks.TryAcquireLockAsync(QueryCacheStore.LockName<string>(key));
+        Assert.NotNull(released);
+    }
+
+    [Fact]
+    public async Task A_lock_that_times_out_does_not_block_the_query()
+    {
+        var locks = NewLocks();
+        QueryCacheStore.DistributedLock = locks;
+        QueryCacheStore.DistributedLockTimeout = TimeSpan.FromMilliseconds(100);
+        var key = Key(nameof(A_lock_that_times_out_does_not_block_the_query));
+        var calls = new StrongBox<int>();
+        await using var stuck = await locks.AcquireLockAsync(QueryCacheStore.LockName<string>(key));
+
+        Assert.Equal("mine", await QueryCacheStore.GetOrAddAsync(key, Minute, Counting(calls), CancellationToken.None));
+        Assert.Equal(1, calls.Value);
+    }
+
+    [Fact]
+    public async Task A_failing_lock_does_not_fail_the_query()
+    {
+        var notADirectory = Path.GetTempFileName();
+        try
+        {
+            QueryCacheStore.DistributedLock = new FileDistributedSynchronizationProvider(new DirectoryInfo(notADirectory));
+            var calls = new StrongBox<int>();
+
+            Assert.Equal("mine", await QueryCacheStore.GetOrAddAsync(Key(nameof(A_failing_lock_does_not_fail_the_query)), Minute, Counting(calls), CancellationToken.None));
+            Assert.Equal(1, calls.Value);
+        }
+        finally
+        {
+            File.Delete(notADirectory);
+        }
     }
 
     private static HybridCache NewCache(IDistributedCache distributed)

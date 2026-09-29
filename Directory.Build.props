@@ -9,7 +9,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <CodeAnalysisTreatWarningsAsErrors>true</CodeAnalysisTreatWarningsAsErrors>
     <WarningLevel>9999</WarningLevel>
-    <NoWarn>$(NoWarn);CA1062;CA1819;CA1515;MA0048;MA0016</NoWarn>
+    <NoWarn>$(NoWarn);CA1062;CA1819;CA1515;MA0048;MA0016;IDE1006</NoWarn>
     <AccelerateBuildsInVisualStudio>true</AccelerateBuildsInVisualStudio>
     <NuGetAuditMode>all</NuGetAuditMode>
     <NuGetAuditLevel>high</NuGetAuditLevel>

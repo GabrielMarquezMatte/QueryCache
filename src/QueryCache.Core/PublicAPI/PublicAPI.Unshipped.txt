@@ -1,1 +1,5 @@
 #nullable enable
+static QueryCache.QueryCacheStore.DistributedLock.get -> Medallion.Threading.IDistributedLockProvider?
+static QueryCache.QueryCacheStore.DistributedLock.set -> void
+static QueryCache.QueryCacheStore.DistributedLockTimeout.get -> System.TimeSpan
+static QueryCache.QueryCacheStore.DistributedLockTimeout.set -> void
