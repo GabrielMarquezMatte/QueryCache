@@ -82,6 +82,45 @@ namespace QueryCache.EFCore
             return (await query.ToListCachedAsync(expiration, cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector, comparer);
         }
 
+        /// <summary>Builds a dictionary from the rows cached by <see cref="ToListCachedAsync{T}"/>.</summary>
+        /// <typeparam name="T">The row type.</typeparam>
+        /// <typeparam name="TKey">The key type.</typeparam>
+        /// <typeparam name="TValue">The value type.</typeparam>
+        /// <param name="query">The query to run.</param>
+        /// <param name="keySelector">Selects each row's key.</param>
+        /// <param name="valueSelector">Selects each row's value.</param>
+        /// <param name="comparer">Compares keys.</param>
+        /// <param name="expiration">How long the rows live in the cache.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The selected values keyed by <paramref name="keySelector"/>.</returns>
+        public static async ValueTask<Dictionary<TKey, TValue>> ToDictionaryCachedAsync<T, TKey, TValue>(this IQueryable<T> query, Func<T, TKey> keySelector, Func<T, TValue> valueSelector, IEqualityComparer<TKey> comparer, TimeSpan expiration, CancellationToken cancellationToken) where TKey : notnull
+        {
+            return (await query.ToListCachedAsync(expiration, cancellationToken).ConfigureAwait(false)).ToDictionary(keySelector, valueSelector, comparer);
+        }
+
+        /// <summary>Builds a set from the rows cached by <see cref="ToListCachedAsync{T}"/>.</summary>
+        /// <typeparam name="T">The row type.</typeparam>
+        /// <param name="query">The query to run.</param>
+        /// <param name="expiration">How long the rows live in the cache.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The distinct rows.</returns>
+        public static async ValueTask<HashSet<T>> ToHashSetCachedAsync<T>(this IQueryable<T> query, TimeSpan expiration, CancellationToken cancellationToken)
+        {
+            return [.. await query.ToListCachedAsync(expiration, cancellationToken).ConfigureAwait(false)];
+        }
+
+        /// <summary>Builds a set from the rows cached by <see cref="ToListCachedAsync{T}"/>.</summary>
+        /// <typeparam name="T">The row type.</typeparam>
+        /// <param name="query">The query to run.</param>
+        /// <param name="comparer">Compares rows.</param>
+        /// <param name="expiration">How long the rows live in the cache.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The rows distinct under <paramref name="comparer"/>.</returns>
+        public static async ValueTask<HashSet<T>> ToHashSetCachedAsync<T>(this IQueryable<T> query, IEqualityComparer<T> comparer, TimeSpan expiration, CancellationToken cancellationToken)
+        {
+            return (await query.ToListCachedAsync(expiration, cancellationToken).ConfigureAwait(false)).ToHashSet(comparer);
+        }
+
         /// <summary>Returns the first row (or <see langword="default"/>) from the cache, or runs the query and caches it for <paramref name="expiration"/>.</summary>
         /// <typeparam name="T">The row type.</typeparam>
         /// <param name="query">The query to run.</param>

@@ -40,7 +40,7 @@ var row = await conn.ToCacheQuery<int>(new CommandDefinition("select id from t w
 | Package | What |
 |---|---|
 | `QueryCache.Core` | `QueryCacheStore`: cache keyed by `QueryKey`, single-flight, tag invalidation, in-process LRU or `HybridCache`. No DB dependency. |
-| `QueryCache.EFCore` | `IQueryable<T>` extensions: `ToListCachedAsync/ToDictionaryCachedAsync/FirstOrDefaultCachedAsync/FirstCachedAsync/SingleOrDefaultCachedAsync/AnyCachedAsync/CountCachedAsync/SumCachedAsync/MaxCachedAsync(expiration, ct)`, `InvalidateCacheAsync(ct)`, and `UseQueryCacheInvalidation()` for `SaveChanges`. |
+| `QueryCache.EFCore` | `IQueryable<T>` extensions: `ToListCachedAsync/ToDictionaryCachedAsync/ToHashSetCachedAsync/FirstOrDefaultCachedAsync/FirstCachedAsync/SingleOrDefaultCachedAsync/AnyCachedAsync/CountCachedAsync/SumCachedAsync/MaxCachedAsync(expiration, ct)`, `InvalidateCacheAsync(ct)`, and `UseQueryCacheInvalidation()` for `SaveChanges`. |
 | `QueryCache.Dapper` | `DapperCacheQuery<T>` (`connection.ToCacheQuery<T>(command)`): `QueryAsync/QueryFirstOrDefaultAsync/ExecuteScalarAsync(expiration, ct)` and `InvalidateCacheAsync(ct)`. |
 
 ### Distributed cache

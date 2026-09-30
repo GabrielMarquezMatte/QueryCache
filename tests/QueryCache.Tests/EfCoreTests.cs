@@ -439,6 +439,33 @@ public sealed class EfCoreTests
     }
 
     [Fact]
+    public async Task ToDictionaryCachedAsync_with_a_value_selector_uses_the_key_comparer()
+    {
+        await using var db = await NewDb(new Item { Id = 1, Name = "a", Code = 7 });
+
+        var codeByName = await db.Items.ToDictionaryCachedAsync(i => i.Name, i => i.Code, StringComparer.OrdinalIgnoreCase, Minute, CancellationToken.None);
+
+        Assert.Equal(7, codeByName["A"]);
+    }
+
+    [Fact]
+    public async Task ToHashSetCachedAsync_shares_the_list_entry_and_applies_the_comparer()
+    {
+        await using var db = await NewDb(new Item { Id = 1, Name = "a" }, new Item { Id = 2, Name = "A" });
+        var names = db.Items.Select(i => i.Name);
+
+        var exact = await names.ToHashSetCachedAsync(Minute, CancellationToken.None);
+        await db.Items.ExecuteDeleteAsync();
+        var ignoringCase = await names.ToHashSetCachedAsync(StringComparer.OrdinalIgnoreCase, Minute, CancellationToken.None);
+
+        Assert.Equal(2, exact.Count);
+        Assert.Single(ignoringCase);
+        Assert.NotSame(exact, await names.ToHashSetCachedAsync(Minute, CancellationToken.None));
+        await names.InvalidateCacheAsync(CancellationToken.None);
+        Assert.Empty(await names.ToHashSetCachedAsync(Minute, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ToDictionaryCachedAsync_uses_the_key_comparer()
     {
         await using var db = await NewDb(new Item { Id = 1, Name = "a" });
