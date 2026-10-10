@@ -79,7 +79,7 @@ public abstract class RedisTests<TSelf>(PostgresServer postgres, RedisServer red
         }, CancellationToken.None).AsTask();
         await Task.Delay(500);
         Assert.False(miss.IsCompleted);
-        await otherInstance.SetAsync(QueryCacheStore.HybridKey<string>(key), "theirs");
+        await otherInstance.SetAsync(QueryCacheStore.HybridKey<string>(key), new CachedValue<string> { Value = "theirs" });
         await held.DisposeAsync();
 
         Assert.Equal("theirs", await miss);

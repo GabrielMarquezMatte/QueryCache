@@ -89,6 +89,31 @@ public sealed class HybridCacheTests : IDisposable
         }
     }
 
+    /// <summary>A cache whose tag invalidation fails, like Redis going down.</summary>
+    private sealed class BrokenTagInvalidation(HybridCache inner) : HybridCache
+    {
+        public override ValueTask<T> GetOrCreateAsync<TState, T>(string key, TState state, Func<TState, CancellationToken, ValueTask<T>> factory,
+                                                                 HybridCacheEntryOptions? options = null, IEnumerable<string>? tags = null, CancellationToken cancellationToken = default)
+        {
+            return inner.GetOrCreateAsync(key, state, factory, options, tags, cancellationToken);
+        }
+
+        public override ValueTask SetAsync<T>(string key, T value, HybridCacheEntryOptions? options = null, IEnumerable<string>? tags = null, CancellationToken cancellationToken = default)
+        {
+            return inner.SetAsync(key, value, options, tags, cancellationToken);
+        }
+
+        public override ValueTask RemoveAsync(string key, CancellationToken cancellationToken = default)
+        {
+            return inner.RemoveAsync(key, cancellationToken);
+        }
+
+        public override ValueTask RemoveByTagAsync(string tag, CancellationToken cancellationToken = default)
+        {
+            return ValueTask.FromException(new InvalidOperationException("redis down"));
+        }
+    }
+
     private readonly SharedCache _distributed = new();
 
     public HybridCacheTests()
@@ -129,7 +154,7 @@ public sealed class HybridCacheTests : IDisposable
         var miss = QueryCacheStore.GetOrAddAsync(key, Minute, Counting(calls), CancellationToken.None).AsTask();
         await Task.Delay(300);
         Assert.False(miss.IsCompleted);
-        await QueryCacheStore.HybridCache!.SetAsync(QueryCacheStore.HybridKey<string>(key), "theirs");
+        await QueryCacheStore.HybridCache!.SetAsync(QueryCacheStore.HybridKey<string>(key), new CachedValue<string> { Value = "theirs" });
         await otherInstance.DisposeAsync();
 
         Assert.Equal("theirs", await miss);
@@ -224,20 +249,47 @@ public sealed class HybridCacheTests : IDisposable
     }
 
     [Fact]
-    public async Task Empty_results_are_not_cached()
+    public async Task Results_without_rows_are_cached()
     {
         var calls = 0;
-        Task<List<int>> Factory(CancellationToken _)
+        Task<T> Factory<T>(T value)
         {
             Interlocked.Increment(ref calls);
-            return Task.FromResult(new List<int>());
+            return Task.FromResult(value);
         }
-        var key = Key(nameof(Empty_results_are_not_cached));
+        var key = Key(nameof(Results_without_rows_are_cached));
 
-        await QueryCacheStore.GetOrAddAsync(key, Minute, Factory, CancellationToken.None);
-        await QueryCacheStore.GetOrAddAsync(key, Minute, Factory, CancellationToken.None);
+        for (var i = 0; i < 2; i++)
+        {
+            Assert.Empty(await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Factory(new List<int>()), CancellationToken.None));
+            Assert.False(await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Factory(false), CancellationToken.None));
+            Assert.Null(await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Factory<string?>(null), CancellationToken.None));
+        }
 
-        Assert.Equal(2, calls);
+        Assert.Equal(3, calls);
+    }
+
+    [Fact]
+    public async Task Another_instance_invalidating_during_a_fill_keeps_the_stale_value_out_of_the_distributed_cache()
+    {
+        var key = Key(nameof(Another_instance_invalidating_during_a_fill_keeps_the_stale_value_out_of_the_distributed_cache));
+        string[] tags = ["tests.remote-during-fill"];
+        var release = new TaskCompletionSource();
+        var started = new TaskCompletionSource();
+        var fill = QueryCacheStore.GetOrAddAsync(key, Minute, async _ =>
+        {
+            started.SetResult();
+            await release.Task;
+            return "stale";
+        }, tags, CancellationToken.None).AsTask();
+
+        await started.Task;
+        await QueryCacheStore.PublishInvalidationAsync(NewCache(_distributed), tags, CancellationToken.None);
+        release.SetResult();
+        Assert.Equal("stale", await fill);
+
+        QueryCacheStore.HybridCache = NewCache(_distributed);
+        Assert.Equal("fresh", await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("fresh"), tags, CancellationToken.None));
     }
 
     [Fact]
@@ -272,7 +324,7 @@ public sealed class HybridCacheTests : IDisposable
         release.SetResult();
 
         Assert.Equal("stale", await fill);
-        Assert.DoesNotContain(_distributed.Written, written => written.StartsWith("querycache:", StringComparison.Ordinal));
+        Assert.DoesNotContain(QueryCacheStore.HybridKey<string>(key), _distributed.Written, StringComparer.Ordinal);
         Assert.Equal("fresh", await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult("fresh"), CancellationToken.None));
     }
 
@@ -287,6 +339,27 @@ public sealed class HybridCacheTests : IDisposable
 
         Assert.Equal(0, _distributed.Writing);
         Assert.Equal(2, (await db.Items.ToListCachedAsync(Minute, CancellationToken.None)).Count);
+    }
+
+    [Fact]
+    public async Task Committed_saves_succeed_when_the_hybrid_cache_cannot_invalidate()
+    {
+        await using var db = await EfCoreTests.NewDb(new EfCoreTests.Item { Id = 1 });
+        QueryCacheStore.HybridCache = new BrokenTagInvalidation(NewCache(_distributed));
+        Assert.Single(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+
+        db.Items.Add(new EfCoreTests.Item { Id = 2 });
+        await db.SaveChangesAsync();
+        db.Items.Add(new EfCoreTests.Item { Id = 3 });
+        db.SaveChanges();
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            db.Items.Add(new EfCoreTests.Item { Id = 4 });
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+
+        Assert.Equal(4, await db.Items.CountAsync());
     }
 
     [Fact]

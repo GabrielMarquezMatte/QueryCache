@@ -193,13 +193,18 @@ public sealed class EfCoreTests
     }
 
     [Fact]
-    public async Task Results_without_rows_are_not_cached()
+    public async Task Results_without_rows_are_cached_until_SaveChanges()
     {
         await using var db = await NewDb();
 
-        Assert.Null(await db.Items.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
-        Assert.False(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
-        Assert.Equal(0, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
+        for (var i = 0; i < 2; i++)
+        {
+            Assert.Null(await db.Items.FirstOrDefaultCachedAsync(Minute, CancellationToken.None));
+            Assert.False(await db.Items.AnyCachedAsync(Minute, CancellationToken.None));
+            Assert.Equal(0, await db.Items.CountCachedAsync(Minute, CancellationToken.None));
+            Assert.Empty(await db.Items.ToListCachedAsync(Minute, CancellationToken.None));
+        }
+        Assert.Equal(4, db.Commands.Count);
         db.Items.Add(new Item { Id = 1 });
         await db.SaveChangesAsync();
 
@@ -454,15 +459,16 @@ public sealed class EfCoreTests
         await using var db = await NewDb(new Item { Id = 1, Name = "a" }, new Item { Id = 2, Name = "A" });
         var names = db.Items.Select(i => i.Name);
 
-        var exact = await names.ToHashSetCachedAsync(Minute, CancellationToken.None);
+        var exact = await names.ToHashSetCachedAsync(StringComparer.Ordinal, Minute, CancellationToken.None);
+        Assert.Equal([1, 2], await db.Items.Select(i => i.Id).ToHashSetCachedAsync(Minute, CancellationToken.None));
         await db.Items.ExecuteDeleteAsync();
         var ignoringCase = await names.ToHashSetCachedAsync(StringComparer.OrdinalIgnoreCase, Minute, CancellationToken.None);
 
         Assert.Equal(2, exact.Count);
         Assert.Single(ignoringCase);
-        Assert.NotSame(exact, await names.ToHashSetCachedAsync(Minute, CancellationToken.None));
+        Assert.NotSame(exact, await names.ToHashSetCachedAsync(StringComparer.Ordinal, Minute, CancellationToken.None));
         await names.InvalidateCacheAsync(CancellationToken.None);
-        Assert.Empty(await names.ToHashSetCachedAsync(Minute, CancellationToken.None));
+        Assert.Empty(await names.ToHashSetCachedAsync(StringComparer.Ordinal, Minute, CancellationToken.None));
     }
 
     [Fact]

@@ -64,6 +64,19 @@ A miss costs ~2 μs over the direct query at 10 rows (1.22x) and ~11 μs at 1,00
 
 A Dapper hit is ~19x cheaper than an EF hit (0.29 μs vs. 5.39 μs), because Dapper already has the SQL text and EF has to generate it. Both are negligible next to a real database round trip.
 
+Splitting the EF hit further, `CreateDbCommand` is ~4.8 μs of the ~5.5 μs, and ~4.4 μs of that is EF's own `Execute` (parameter extraction and the compiled-query cache lookup), the same work a direct query does before it reaches the database. QueryCache's share is ~0.6 μs. Skipping EF would mean keying on the expression tree instead of the SQL, which misses what EF adds at execution time, such as global query filters that read the `DbContext`, so the key stays on the SQL.
+
+### HybridCache hit
+
+`HybridCacheBenchmarks` serves a hit from the local layer of Microsoft's `HybridCache` (`AddHybridCache()`, no distributed cache), with no database involved:
+
+| Scenario | 10 rows | 1,000 rows |
+|---|---:|---:|
+| Hit | 0.83 μs, 328 B | 0.84 μs, 328 B |
+| Key (SHA-256 of the SQL, values and result type) | 0.67 μs, 328 B | 0.66 μs, 328 B |
+
+The entry is stored in a sealed `[ImmutableObject(true)]` wrapper, so the local layer hands back the instance it holds instead of deserializing a copy on every hit. Before that, the same hit cost 3.97 μs at 10 rows and 222 μs (88 KB) at 1,000 rows (measured with `--job short`). Most of what is left is the key. It stays a SHA-256 digest because parameter values come from callers: with a non-cryptographic hash, crafted values could collide with another query's key.
+
 Run the benchmarks locally:
 
 ```bash

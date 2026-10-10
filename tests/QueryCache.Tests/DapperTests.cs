@@ -197,7 +197,7 @@ public sealed class DapperTests
     }
 
     [Fact]
-    public async Task Results_without_rows_are_not_cached()
+    public async Task Results_without_rows_are_cached_until_removed()
     {
         await using var connection = await NewConnection("create table t(id int);");
         var first = Query(connection, new CommandDefinition("select id from t"));
@@ -205,8 +205,16 @@ public sealed class DapperTests
 
         Assert.Equal(0, await first.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
         Assert.Equal(0, await scalar.ExecuteScalarAsync(Minute, CancellationToken.None));
+        Assert.Empty(await first.QueryAsync(Minute, CancellationToken.None));
         await connection.ExecuteAsync("insert into t values (6)");
 
+        Assert.Equal(0, await first.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
+        Assert.Equal(0, await scalar.ExecuteScalarAsync(Minute, CancellationToken.None));
+        Assert.Empty(await first.QueryAsync(Minute, CancellationToken.None));
+        await first.InvalidateCacheAsync(CancellationToken.None);
+        await scalar.InvalidateCacheAsync(CancellationToken.None);
+
+        Assert.Single(await first.QueryAsync(Minute, CancellationToken.None));
         Assert.Equal(6, await first.QueryFirstOrDefaultAsync(Minute, CancellationToken.None));
         Assert.Equal(6, await scalar.ExecuteScalarAsync(Minute, CancellationToken.None));
     }

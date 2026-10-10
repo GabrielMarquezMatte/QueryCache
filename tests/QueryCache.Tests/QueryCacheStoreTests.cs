@@ -51,25 +51,26 @@ public sealed class QueryCacheStoreTests
         Assert.Equal("q", Key("q", 1).ToString());
     }
 
-    private static IEnumerable<int> Lazy(int count)
-    {
-        for (var i = 0; i < count; i++)
-        {
-            yield return i;
-        }
-    }
-
     [Fact]
-    public async Task Lazy_enumerables_are_cached_only_when_they_have_items()
+    public void Hybrid_keys_are_equal_for_equal_keys_and_differ_otherwise()
     {
-        var empty = Key(nameof(Lazy_enumerables_are_cached_only_when_they_have_items), 0);
-        var full = Key(nameof(Lazy_enumerables_are_cached_only_when_they_have_items), 1);
-
-        await QueryCacheStore.GetOrAddAsync(empty, Minute, _ => Task.FromResult(Lazy(0)), CancellationToken.None);
-        await QueryCacheStore.GetOrAddAsync(full, Minute, _ => Task.FromResult(Lazy(2)), CancellationToken.None);
-
-        Assert.False(QueryCacheStore.TryGet<IEnumerable<int>>(empty, out _));
-        Assert.True(QueryCacheStore.TryGet<IEnumerable<int>>(full, out _));
+        Assert.Equal(QueryCacheStore.HybridKey<string>(Key("q", 1, new[] { 1, 2 }, null)), QueryCacheStore.HybridKey<string>(Key("q", 1, new List<int> { 1, 2 }, null)));
+        Assert.Matches("^querycache:[0-9A-F]{64}$", QueryCacheStore.HybridKey<string>(Key("q", 1)));
+        string[] distinct =
+        [
+            QueryCacheStore.HybridKey<string>(Key("q", 1)),
+            QueryCacheStore.HybridKey<string>(Key("q", 1L)),
+            QueryCacheStore.HybridKey<string>(Key("q", "1")),
+            QueryCacheStore.HybridKey<string>(Key("q", 2)),
+            QueryCacheStore.HybridKey<string>(Key("r", 1)),
+            QueryCacheStore.HybridKey<int>(Key("q", 1)),
+            QueryCacheStore.HybridKey<string>(Key("q", new[] { 1, 2 }, new[] { 3 })),
+            QueryCacheStore.HybridKey<string>(Key("q", new[] { 1 }, new[] { 2, 3 })),
+            QueryCacheStore.HybridKey<string>(Key("q", "a\"", "b")),
+            QueryCacheStore.HybridKey<string>(Key("q", "a", "\"b")),
+            QueryCacheStore.HybridKey<string>(Key("q", null, 1)),
+        ];
+        Assert.Equal(distinct.Length, distinct.Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -158,40 +159,22 @@ public sealed class QueryCacheStoreTests
     }
 
     [Fact]
-    public async Task Empty_collections_are_not_cached()
+    public async Task Results_without_rows_are_cached()
     {
-        var key = Key(nameof(Empty_collections_are_not_cached));
-        await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult(new List<int>()), CancellationToken.None);
-        Assert.False(QueryCacheStore.TryGet<List<int>>(key, out _));
-    }
-
-    [Fact]
-    public async Task Empty_lazy_enumerables_are_not_cached()
-    {
-        var key = Key(nameof(Empty_lazy_enumerables_are_not_cached));
-        await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult(Enumerable.Range(0, 0).Select(i => i)), CancellationToken.None);
-        Assert.False(QueryCacheStore.TryGet<IEnumerable<int>>(key, out _));
-    }
-
-    [Fact]
-    public async Task Default_values_are_not_cached()
-    {
-        var key = Key(nameof(Default_values_are_not_cached));
+        var key = Key(nameof(Results_without_rows_are_cached));
         await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult<string?>(null), CancellationToken.None);
         await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult(0), CancellationToken.None);
         await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult(false), CancellationToken.None);
+        await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult(new List<int>()), CancellationToken.None);
 
-        Assert.False(QueryCacheStore.TryGet<string?>(key, out _));
-        Assert.False(QueryCacheStore.TryGet<int>(key, out _));
-        Assert.False(QueryCacheStore.TryGet<bool>(key, out _));
-    }
-
-    [Fact]
-    public async Task Empty_strings_are_cached()
-    {
-        var key = Key(nameof(Empty_strings_are_cached));
-        await QueryCacheStore.GetOrAddAsync(key, Minute, _ => Task.FromResult(string.Empty), CancellationToken.None);
-        Assert.True(QueryCacheStore.TryGet<string>(key, out _));
+        Assert.True(QueryCacheStore.TryGet<string?>(key, out var none));
+        Assert.Null(none);
+        Assert.True(QueryCacheStore.TryGet<int>(key, out var zero));
+        Assert.Equal(0, zero);
+        Assert.True(QueryCacheStore.TryGet<bool>(key, out var no));
+        Assert.False(no);
+        Assert.True(QueryCacheStore.TryGet<List<int>>(key, out var empty));
+        Assert.Empty(empty);
     }
 
     [Fact]

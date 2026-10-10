@@ -13,5 +13,7 @@ namespace QueryCache
             .Build();
 
         public static readonly KeyValuePair<string, object?> TypeTag = new("querycache.type", typeof(TResult).ToString());
+
+        public static readonly string HybridScope = typeof(CachedValue<TResult>).ToString();
     }
 }

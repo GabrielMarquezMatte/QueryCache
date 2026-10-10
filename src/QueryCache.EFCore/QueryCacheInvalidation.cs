@@ -11,6 +11,8 @@ namespace QueryCache.EFCore
     /// Entries are invalidated after the save and again when the surrounding transaction (EF or <see cref="TransactionScope"/>) commits,
     /// so readers on other connections cannot keep data they cached while the transaction was open.
     /// <c>ExecuteUpdate</c>, <c>ExecuteDelete</c>, raw SQL and Dapper writes are not seen; call <c>InvalidateCacheAsync()</c> for those.
+    /// The write is committed by then, so a <see cref="QueryCacheStore.HybridCache"/> that fails to invalidate does not fail the save:
+    /// <c>querycache.invalidation.failures</c> counts it, and other instances may serve the old entry until it expires.
     /// </remarks>
     public static class QueryCacheInvalidation
     {
@@ -66,9 +68,9 @@ namespace QueryCache.EFCore
             }
             else if (Transaction.Current is { } ambient)
             {
-                ambient.TransactionCompleted += (_, _) => Wait(QueryCacheStore.InvalidateTagsAsync(tags, CancellationToken.None));
+                ambient.TransactionCompleted += (_, _) => Wait(QueryCacheStore.InvalidateCommittedTagsAsync(tags));
             }
-            return QueryCacheStore.InvalidateTagsAsync(tags, CancellationToken.None);
+            return QueryCacheStore.InvalidateCommittedTagsAsync(tags);
         }
 
         private static ValueTask Ended(DbContext? context, bool committed)
@@ -79,7 +81,7 @@ namespace QueryCache.EFCore
             }
             string[] tags = committed ? [.. state.Pending] : [];
             state.Pending.Clear();
-            return QueryCacheStore.InvalidateTagsAsync(tags, CancellationToken.None);
+            return QueryCacheStore.InvalidateCommittedTagsAsync(tags);
         }
 
         private static void Wait(ValueTask task)

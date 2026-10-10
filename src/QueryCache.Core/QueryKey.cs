@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace QueryCache;
@@ -54,18 +56,33 @@ public sealed class QueryKey : IEquatable<QueryKey>
 
     private sealed record Sequence(int Count);
 
-    /// <summary>The text and values as one string that is equal across processes for equal keys, for caches keyed by string.</summary>
-    internal string StableText()
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_buffer;
+
+    [ThreadStatic]
+    private static Utf8JsonWriter? t_writer;
+
+    /// <summary>SHA-256 of <paramref name="scope"/>, the text and the values, in hex: equal across processes for equal keys, for caches keyed by string.</summary>
+    internal string Digest(string scope)
     {
-        var parts = new string?[1 + (2 * _values.Length)];
-        parts[0] = _text;
-        for (var i = 0; i < _values.Length; i++)
+        var buffer = t_buffer ??= new ArrayBufferWriter<byte>(512);
+        buffer.ResetWrittenCount();
+        var writer = t_writer ??= new Utf8JsonWriter(buffer);
+        writer.Reset(buffer);
+        writer.WriteStartArray();
+        writer.WriteStringValue(scope);
+        writer.WriteStringValue(_text);
+        foreach (var value in _values)
         {
-            var type = _values[i]?.GetType();
-            parts[1 + (2 * i)] = type?.FullName;
-            parts[2 + (2 * i)] = JsonSerializer.Serialize(_values[i], type ?? typeof(object));
+            var type = value?.GetType();
+            writer.WriteStringValue(type?.FullName);
+            JsonSerializer.Serialize(writer, value, type ?? typeof(object));
         }
-        return JsonSerializer.Serialize(parts);
+        writer.WriteEndArray();
+        writer.Flush();
+        Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
+        SHA256.HashData(buffer.WrittenSpan, hash);
+        return Convert.ToHexString(hash);
     }
 
     /// <inheritdoc/>

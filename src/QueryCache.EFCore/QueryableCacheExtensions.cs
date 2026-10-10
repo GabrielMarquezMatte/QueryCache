@@ -29,7 +29,7 @@ namespace QueryCache.EFCore
 
         private static readonly MethodInfo AsNoTrackingMethod = typeof(EntityFrameworkQueryableExtensions).GetMethod(nameof(EntityFrameworkQueryableExtensions.AsNoTracking))!;
 
-        /// <summary>Returns the rows from the cache, or runs the query and caches them for <paramref name="expiration"/>. Empty results are not cached.</summary>
+        /// <summary>Returns the rows from the cache, or runs the query and caches them for <paramref name="expiration"/>.</summary>
         /// <typeparam name="T">The row type.</typeparam>
         /// <param name="query">The query to run.</param>
         /// <param name="expiration">How long the result lives in the cache.</param>

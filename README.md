@@ -57,7 +57,7 @@ var app = builder.Build();
 QueryCacheStore.HybridCache = app.Services.GetRequiredService<HybridCache>();
 ```
 
-Keys and tags are SHA-256 digests (no SQL or connection string in Redis). Tested against Redis with two caches per test standing in for two instances:
+Keys and tags are SHA-256 digests (no SQL or connection string in Redis). Each tag also gets a small stamp key in the cache, rewritten on every invalidation: a miss reads its tags' stamps before running the query and again after storing the result, and removes the entry if any changed. That way an instance that read the old rows cannot store them after another instance invalidated them. It costs two reads per tag on a miss and one write per tag on an invalidation. Tested against Redis with two caches per test standing in for two instances:
 
 | | FusionCache + backplane | Microsoft `AddHybridCache()` |
 |---|---|---|
@@ -67,8 +67,10 @@ Keys and tags are SHA-256 digests (no SQL or connection string in Redis). Tested
 
 So with Microsoft's `HybridCache`, only rely on `SaveChanges` invalidation within one instance, or keep expirations short. Other trade-offs:
 
-- A hit deserializes, so it costs more than the in-process hit and grows with the row count; callers get their own copies.
+- A hit from the instance's local layer returns the instance it holds (~0.8 μs whatever the row count), shared between callers as in process; do not mutate it. A hit read from the distributed layer (Redis) deserializes, so it grows with the row count.
 - Single-flight is per process unless you add a distributed lock (below).
+- The write is already committed when `SaveChanges` invalidates, so a cache that fails then (Redis down) does not fail the save: `querycache.invalidation.failures` counts it, and other instances may serve the old entry until it expires.
+- Entries are stored wrapped, so a cache shared with an older QueryCache version does not read the other version's entries.
 
 #### Distributed lock
 
@@ -80,7 +82,7 @@ QueryCacheStore.DistributedLock = new RedisDistributedSynchronizationProvider(re
 QueryCacheStore.DistributedLockTimeout = TimeSpan.FromSeconds(10);   // default; set it above your slowest cached query
 ```
 
-Any `IDistributedLockProvider` from [DistributedLock](https://github.com/madelson/DistributedLock) works (PostgreSQL, SQL Server, Azure blobs...). The lock only applies with a `HybridCache`, and it never fails a query: a lock that times out or errors lets the query run unlocked and counts it on `querycache.lock.failures`. A miss costs one more cache read and a lock round trip. Results with no rows are never stored, so instances waiting on one run the query in turn.
+Any `IDistributedLockProvider` from [DistributedLock](https://github.com/madelson/DistributedLock) works (PostgreSQL, SQL Server, Azure blobs...). The lock only applies with a `HybridCache`, and it never fails a query: a lock that times out or errors lets the query run unlocked and counts it on `querycache.lock.failures`. A miss costs one more cache read and a lock round trip.
 
 #### Navigation properties
 
@@ -123,15 +125,15 @@ A hit costs the same whatever the row count. A miss adds ~32 μs for EF Core and
 
 - Any LINQ/EF operator can come before the cached call. EF results are loaded with no tracking. Relational providers only (the key comes from `CreateDbCommand`).
 - Lists are read-only (`IReadOnlyList<T>`) because every caller gets the same instance; do not mutate the entities either.
-- **Key**: SQL + parameter **values** (compared exactly, arrays item by item) + connection string without password.
+- **Key**: SQL + parameter **values** (compared exactly, arrays item by item) + connection string without password. Anything else that changes what a query returns is not in the key: an access token set on the connection (`SqlConnection.AccessToken`), `SESSION_CONTEXT` or `SET ROLE` driving row-level security, and so on. Connections that differ only in those share entries, so do not cache such queries, or put the identity in the query.
 - **Transactions**: reads inside a transaction (EF, Dapper `command.Transaction`, or `TransactionScope`) skip the cache.
 - **`SaveChanges`** (with `UseQueryCacheInvalidation()`): drops entries that read the written tables, and again on commit. `ExecuteUpdate`, `ExecuteDelete`, raw SQL and Dapper writes are not seen; call `InvalidateCacheAsync(ct)` for those.
 - `SumCachedAsync` / `MaxCachedAsync` work on a projection: `query.Select(x => x.Price).SumCachedAsync(...)`. Each operator has its own entry, so `First` never answers `Single`.
-- **No rows** (empty collections, `null`, `0`, `false`): returned, never cached.
+- **No rows** (empty collections, `null`, `0`, `false`) are cached like any result and invalidated the same way.
 - **Single-flight**: concurrent misses in a process run the query once and share its result or its exception; across instances with `QueryCacheStore.DistributedLock`.
 - `QueryCacheStore.Capacity` sets the in-process entries kept per result type (default 128); set it at startup. `Timeout.InfiniteTimeSpan` keeps an entry until removed or evicted; zero or negative expirations throw.
 - To skip the cache, call EF/Dapper directly.
-- Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`, `querycache.fill.duration` (s), `querycache.store.failures`, `querycache.lock.failures`, tagged with `querycache.type`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
+- Metrics (`System.Diagnostics.Metrics`, meter `QueryCacheStore.MeterName` = `"QueryCache"`): `querycache.hits`, `querycache.misses`, `querycache.fill.duration` (s), `querycache.store.failures`, `querycache.lock.failures`, tagged with `querycache.type`, and `querycache.invalidation.failures`. With OpenTelemetry: `.WithMetrics(m => m.AddMeter(QueryCacheStore.MeterName))`.
 
 ## Build
 
