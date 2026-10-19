@@ -17,11 +17,11 @@
   <!-- AnalysisMode=All turns on every NetAnalyzers rule; Meziantou adds the async/culture rules it does not cover.
        PublicApiAnalyzers (RS0016/RS0017) makes every public API change show up in src/*/PublicAPI/*.txt. -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.401">
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.402">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Meziantou.Analyzer" Version="3.0.290">
+    <PackageReference Include="Meziantou.Analyzer" Version="3.0.313">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
